@@ -65,6 +65,7 @@ def test_index_normalizes_catalogue_usage_events_and_missing_rollouts(
         assert modern_usage["input_tokens"] == 120
         assert modern_usage["cached_input_tokens"] == 10
         assert modern_usage["output_tokens"] == 30
+        assert modern_usage["reasoning_output_tokens"] is None
         assert modern_usage["total_tokens"] == 150
 
         legacy_usage = connection.execute(
@@ -126,6 +127,81 @@ def test_index_is_idempotent_when_sources_are_unchanged(
     assert second.skipped == 1
     assert second.failed == 0
     assert before == after
+
+
+def test_cumulative_token_snapshots_are_not_summed_with_each_other_or_turn_deltas(
+    synthetic_audit_home: Path,
+) -> None:
+    adapter = CodexLocalAdapter(resolve_codex_home(synthetic_audit_home))
+    candidates, _ = adapter.discover_sessions()
+    candidate = next(
+        item for item in candidates if item.session.source_session_id == "synthetic-thread-modern"
+    )
+    rollout = candidate.session.source_path
+    assert rollout is not None
+    records = (
+        {
+            "timestamp": "2026-08-09T00:01:00Z",
+            "type": "event_msg",
+            "payload": {
+                "type": "token_count",
+                "info": {
+                    "last_token_usage": {
+                        "input_tokens": 20,
+                        "output_tokens": 10,
+                        "total_tokens": 30,
+                    }
+                },
+            },
+        },
+        {
+            "timestamp": "2026-08-09T00:02:00Z",
+            "type": "event_msg",
+            "payload": {
+                "type": "token_count",
+                "info": {
+                    "last_token_usage": {
+                        "input_tokens": 50,
+                        "output_tokens": 20,
+                        "total_tokens": 70,
+                    },
+                    "total_token_usage": {
+                        "input_tokens": 80,
+                        "output_tokens": 20,
+                        "total_tokens": 100,
+                    },
+                },
+            },
+        },
+        {
+            "timestamp": "2026-08-09T00:03:00Z",
+            "type": "event_msg",
+            "payload": {
+                "type": "token_count",
+                "info": {
+                    "last_token_usage": {
+                        "input_tokens": 35,
+                        "output_tokens": 15,
+                        "total_tokens": 50,
+                    },
+                    "total_token_usage": {
+                        "input_tokens": 120,
+                        "output_tokens": 30,
+                        "total_tokens": 150,
+                    },
+                },
+            },
+        },
+    )
+    rollout.write_text("".join(json.dumps(record) + "\n" for record in records), encoding="utf-8")
+
+    parsed = adapter.parse_session(candidate)
+
+    assert parsed.session.usage.semantics.value == "cumulative_total"
+    assert parsed.session.usage.input_tokens == 120
+    assert parsed.session.usage.output_tokens == 30
+    assert parsed.session.usage.total_tokens == 150
+    assert parsed.session.usage.token_update_count == 3
 
 
 def test_changed_rollout_refreshes_only_that_session(

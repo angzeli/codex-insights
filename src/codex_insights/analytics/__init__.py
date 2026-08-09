@@ -17,6 +17,17 @@ from codex_insights.analytics.queries import (
     list_sessions,
     parse_time_range,
 )
+from codex_insights.analytics.usage import (
+    TimezoneError,
+    TimezoneSpec,
+    UsageBreakdown,
+    UsageCoverage,
+    UsageGroup,
+    UsageMetrics,
+    UsageReport,
+    get_usage_report,
+    resolve_timezone,
+)
 
 __all__ = [
     "AmbiguousSessionIdError",
@@ -34,4 +45,13 @@ __all__ = [
     "list_repositories",
     "list_sessions",
     "parse_time_range",
+    "TimezoneError",
+    "TimezoneSpec",
+    "UsageBreakdown",
+    "UsageCoverage",
+    "UsageGroup",
+    "UsageMetrics",
+    "UsageReport",
+    "get_usage_report",
+    "resolve_timezone",
 ]

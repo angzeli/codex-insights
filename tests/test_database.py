@@ -48,9 +48,13 @@ def test_index_schema_is_versioned_and_normalized(tmp_path: Path) -> None:
         session_columns = {
             str(row[1]) for row in connection.execute("PRAGMA table_info(source_sessions)")
         }
+        usage_columns = {
+            str(row[1]): bool(row[3]) for row in connection.execute("PRAGMA table_info(usage)")
+        }
 
     assert version == SCHEMA_VERSION
     assert "client_source" in session_columns
+    assert usage_columns["total_tokens"] is False
     assert {
         "source_sessions",
         "usage",

@@ -68,12 +68,12 @@ class NormalizedUsage:
     """Per-session totals with explicit cumulative-versus-delta semantics."""
 
     semantics: UsageSemantics = UsageSemantics.UNAVAILABLE
-    input_tokens: int = 0
-    cached_input_tokens: int = 0
-    cache_write_input_tokens: int = 0
-    output_tokens: int = 0
-    reasoning_output_tokens: int = 0
-    total_tokens: int = 0
+    input_tokens: int | None = None
+    cached_input_tokens: int | None = None
+    cache_write_input_tokens: int | None = None
+    output_tokens: int | None = None
+    reasoning_output_tokens: int | None = None
+    total_tokens: int | None = None
     token_update_count: int = 0
 
 

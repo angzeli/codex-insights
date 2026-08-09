@@ -7,7 +7,7 @@ from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 _MIGRATION_1 = """
 CREATE TABLE source_sessions (
@@ -103,7 +103,47 @@ ALTER TABLE source_sessions ADD COLUMN client_source TEXT;
 CREATE INDEX source_sessions_client_source_idx ON source_sessions(client_source);
 """
 
-_MIGRATIONS = {1: _MIGRATION_1, 2: _MIGRATION_2}
+_MIGRATION_3 = """
+ALTER TABLE usage RENAME TO usage_v2;
+
+CREATE TABLE usage (
+    source_session_id INTEGER PRIMARY KEY REFERENCES source_sessions(id) ON DELETE CASCADE,
+    usage_semantics TEXT NOT NULL CHECK (
+        usage_semantics IN ('cumulative_total', 'summed_event_deltas', 'unavailable')
+    ),
+    input_tokens INTEGER CHECK (input_tokens IS NULL OR input_tokens >= 0),
+    cached_input_tokens INTEGER CHECK (cached_input_tokens IS NULL OR cached_input_tokens >= 0),
+    cache_write_input_tokens INTEGER CHECK (
+        cache_write_input_tokens IS NULL OR cache_write_input_tokens >= 0
+    ),
+    output_tokens INTEGER CHECK (output_tokens IS NULL OR output_tokens >= 0),
+    reasoning_output_tokens INTEGER CHECK (
+        reasoning_output_tokens IS NULL OR reasoning_output_tokens >= 0
+    ),
+    total_tokens INTEGER CHECK (total_tokens IS NULL OR total_tokens >= 0),
+    token_update_count INTEGER NOT NULL DEFAULT 0 CHECK (token_update_count >= 0),
+    updated_at TEXT NOT NULL
+);
+
+INSERT INTO usage(
+    source_session_id, usage_semantics, input_tokens, cached_input_tokens,
+    cache_write_input_tokens, output_tokens, reasoning_output_tokens, total_tokens,
+    token_update_count, updated_at
+)
+SELECT source_session_id, usage_semantics,
+       CASE WHEN usage_semantics = 'unavailable' THEN NULL ELSE input_tokens END,
+       CASE WHEN usage_semantics = 'unavailable' THEN NULL ELSE cached_input_tokens END,
+       CASE WHEN usage_semantics = 'unavailable' THEN NULL ELSE cache_write_input_tokens END,
+       CASE WHEN usage_semantics = 'unavailable' THEN NULL ELSE output_tokens END,
+       CASE WHEN usage_semantics = 'unavailable' THEN NULL ELSE reasoning_output_tokens END,
+       CASE WHEN usage_semantics = 'unavailable' THEN NULL ELSE total_tokens END,
+       token_update_count, updated_at
+FROM usage_v2;
+
+DROP TABLE usage_v2;
+"""
+
+_MIGRATIONS = {1: _MIGRATION_1, 2: _MIGRATION_2, 3: _MIGRATION_3}
 
 
 class UnsafeDatabasePathError(ValueError):

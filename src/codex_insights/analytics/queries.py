@@ -6,7 +6,7 @@ import re
 import sqlite3
 from contextlib import closing
 from dataclasses import dataclass
-from datetime import UTC, date, datetime, time, timedelta
+from datetime import UTC, date, datetime, time, timedelta, tzinfo
 from pathlib import Path
 from typing import Any, cast
 
@@ -309,12 +309,23 @@ def parse_time_range(
     until: str | None,
     *,
     now: datetime | None = None,
+    timezone: tzinfo = UTC,
 ) -> tuple[datetime | None, datetime | None]:
     """Parse inclusive ``since`` and exclusive ``until`` UTC boundaries."""
 
     reference = _as_utc(now or datetime.now(tz=UTC))
-    parsed_since = _parse_time_expression(since, now=reference, date_until=False)
-    parsed_until = _parse_time_expression(until, now=reference, date_until=True)
+    parsed_since = _parse_time_expression(
+        since,
+        now=reference,
+        date_until=False,
+        timezone=timezone,
+    )
+    parsed_until = _parse_time_expression(
+        until,
+        now=reference,
+        date_until=True,
+        timezone=timezone,
+    )
     if parsed_since is not None and parsed_until is not None and parsed_since >= parsed_until:
         raise TimeExpressionError("--since must be earlier than --until")
     return parsed_since, parsed_until
@@ -424,8 +435,9 @@ def list_repositories(
                    MIN(s.started_at) AS first_activity,
                    MAX(s.started_at) AS latest_activity,
                    SUM(CASE WHEN u.usage_semantics != 'unavailable'
-                            THEN u.total_tokens ELSE NULL END) AS total_known_tokens,
+                            THEN u.total_tokens END) AS total_known_tokens,
                    SUM(CASE WHEN u.usage_semantics != 'unavailable'
+                                  AND u.total_tokens IS NOT NULL
                             THEN 1 ELSE 0 END) AS sessions_with_token_data
             FROM source_sessions AS s
             LEFT JOIN usage AS u ON u.source_session_id = s.id
@@ -452,8 +464,9 @@ def list_models(
                    MIN(s.started_at) AS first_activity,
                    MAX(s.started_at) AS latest_activity,
                    SUM(CASE WHEN u.usage_semantics != 'unavailable'
-                            THEN u.total_tokens ELSE NULL END) AS total_known_tokens,
+                            THEN u.total_tokens END) AS total_known_tokens,
                    SUM(CASE WHEN u.usage_semantics != 'unavailable'
+                                  AND u.total_tokens IS NOT NULL
                             THEN 1 ELSE 0 END) AS sessions_with_token_data
             FROM source_sessions AS s
             LEFT JOIN usage AS u ON u.source_session_id = s.id
@@ -492,8 +505,9 @@ def get_stats(
                    SUM(CASE WHEN s.started_at >= ? AND s.started_at <= ?
                             THEN 1 ELSE 0 END) AS sessions_last_30_days,
                    SUM(CASE WHEN u.usage_semantics != 'unavailable'
-                            THEN u.total_tokens ELSE NULL END) AS total_known_tokens,
+                            THEN u.total_tokens END) AS total_known_tokens,
                    SUM(CASE WHEN u.usage_semantics != 'unavailable'
+                                  AND u.total_tokens IS NOT NULL
                             THEN 1 ELSE 0 END) AS sessions_with_token_data
             FROM source_sessions AS s
             LEFT JOIN usage AS u ON u.source_session_id = s.id
@@ -621,12 +635,12 @@ def _usage_view(row: sqlite3.Row) -> TokenUsageView:
     known = semantics != "unavailable"
     return TokenUsageView(
         semantics=semantics,
-        input_tokens=int(row["input_tokens"]) if known else None,
-        cached_input_tokens=int(row["cached_input_tokens"]) if known else None,
-        cache_write_input_tokens=int(row["cache_write_input_tokens"]) if known else None,
-        output_tokens=int(row["output_tokens"]) if known else None,
-        reasoning_output_tokens=int(row["reasoning_output_tokens"]) if known else None,
-        total_tokens=int(row["total_tokens"]) if known else None,
+        input_tokens=_optional_int(row["input_tokens"]) if known else None,
+        cached_input_tokens=_optional_int(row["cached_input_tokens"]) if known else None,
+        cache_write_input_tokens=_optional_int(row["cache_write_input_tokens"]) if known else None,
+        output_tokens=_optional_int(row["output_tokens"]) if known else None,
+        reasoning_output_tokens=(_optional_int(row["reasoning_output_tokens"]) if known else None),
+        total_tokens=_optional_int(row["total_tokens"]) if known else None,
         token_update_count=int(row["token_update_count"] or 0),
     )
 
@@ -675,6 +689,7 @@ def _parse_time_expression(
     *,
     now: datetime,
     date_until: bool,
+    timezone: tzinfo,
 ) -> datetime | None:
     if expression is None:
         return None
@@ -699,8 +714,10 @@ def _parse_time_expression(
     except ValueError:
         parsed_date = None
     if parsed_date is not None:
-        boundary = datetime.combine(parsed_date, time.min, tzinfo=UTC)
-        return boundary + timedelta(days=1) if date_until else boundary
+        boundary = datetime.combine(parsed_date, time.min, tzinfo=timezone)
+        if date_until:
+            boundary += timedelta(days=1)
+        return _as_utc(boundary)
 
     try:
         parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
@@ -708,6 +725,8 @@ def _parse_time_expression(
         raise TimeExpressionError(
             f"Unsupported time {expression!r}; use ISO 8601 or a duration such as 7d or 24h"
         ) from exc
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone)
     return _as_utc(parsed)
 
 

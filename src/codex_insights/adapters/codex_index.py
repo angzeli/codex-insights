@@ -23,7 +23,7 @@ from codex_insights.models import (
     UsageSemantics,
 )
 
-PARSER_VERSION = "codex-local-v1"
+PARSER_VERSION = "codex-local-v2"
 MAX_ROLLOUT_LINE_BYTES = 1024 * 1024
 
 _COLUMN_ALIASES: dict[str, tuple[str, ...]] = {
@@ -119,7 +119,7 @@ def parse_rollout(candidate: SourceSessionCandidate) -> ParsedSourceSession:
 
     session = candidate.session
     event_counts: Counter[EventCategory] = Counter()
-    latest_cumulative: dict[str, int] | None = None
+    latest_cumulative: dict[str, int | None] | None = None
     summed_deltas = _empty_usage()
     token_update_count = 0
     malformed = 0
@@ -180,7 +180,9 @@ def parse_rollout(candidate: SourceSessionCandidate) -> ParsedSourceSession:
                 token_update_count += 1
             elif deltas is not None:
                 for key, value in deltas.items():
-                    summed_deltas[key] += value
+                    if value is not None:
+                        previous = summed_deltas[key]
+                        summed_deltas[key] = value + (previous or 0)
                 token_update_count += 1
 
     usage_values = latest_cumulative if latest_cumulative is not None else summed_deltas
@@ -198,8 +200,7 @@ def parse_rollout(candidate: SourceSessionCandidate) -> ParsedSourceSession:
         cache_write_input_tokens=usage_values["cache_write_input_tokens"],
         output_tokens=usage_values["output_tokens"],
         reasoning_output_tokens=usage_values["reasoning_output_tokens"],
-        total_tokens=usage_values["total_tokens"]
-        or usage_values["input_tokens"] + usage_values["output_tokens"],
+        total_tokens=_total_tokens(usage_values),
         token_update_count=token_update_count,
     )
     repository_root, repository_name = _resolve_repository(cwd)
@@ -448,7 +449,7 @@ def _event_category(
 def _usage_updates(
     record: Mapping[str, Any],
     payload: Mapping[str, Any],
-) -> tuple[dict[str, int] | None, dict[str, int] | None]:
+) -> tuple[dict[str, int | None] | None, dict[str, int | None] | None]:
     info = payload.get("info")
     info_map = info if isinstance(info, dict) else {}
     cumulative = info_map.get("total_token_usage")
@@ -465,7 +466,7 @@ def _usage_updates(
     return None, None
 
 
-def _normalized_usage_values(values: Mapping[str, Any]) -> dict[str, int]:
+def _normalized_usage_values(values: Mapping[str, Any]) -> dict[str, int | None]:
     aliases = {
         "input_tokens": ("input_tokens", "prompt_tokens"),
         "cached_input_tokens": ("cached_input_tokens", "cache_read_input_tokens"),
@@ -483,21 +484,32 @@ def _normalized_usage_values(values: Mapping[str, Any]) -> dict[str, int]:
                 and not isinstance(values.get(source), bool)
                 and values[source] >= 0
             ),
-            0,
+            None,
         )
         for target, sources in aliases.items()
     }
 
 
-def _empty_usage() -> dict[str, int]:
+def _empty_usage() -> dict[str, int | None]:
     return {
-        "input_tokens": 0,
-        "cached_input_tokens": 0,
-        "cache_write_input_tokens": 0,
-        "output_tokens": 0,
-        "reasoning_output_tokens": 0,
-        "total_tokens": 0,
+        "input_tokens": None,
+        "cached_input_tokens": None,
+        "cache_write_input_tokens": None,
+        "output_tokens": None,
+        "reasoning_output_tokens": None,
+        "total_tokens": None,
     }
+
+
+def _total_tokens(values: Mapping[str, int | None]) -> int | None:
+    reported = values["total_tokens"]
+    if reported is not None:
+        return reported
+    input_tokens = values["input_tokens"]
+    output_tokens = values["output_tokens"]
+    if input_tokens is None or output_tokens is None:
+        return None
+    return input_tokens + output_tokens
 
 
 def _record_type(record: Mapping[str, Any]) -> str:
