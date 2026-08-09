@@ -201,10 +201,10 @@ home.
 Python 3.11 or newer is required.
 
 ```bash
-python3 -m venv .venv
-source .venv/bin/activate
-python -m pip install --upgrade pip
-python -m pip install -e '.[dev]'
+# Creates the non-hidden venv-acceptance environment, installs editable,
+# and verifies both a fresh import and the CLI entry point.
+./scripts/setup-dev.sh
+source venv-acceptance/bin/activate
 
 pytest
 ruff check .
@@ -216,6 +216,38 @@ codex-insights doctor --codex-home tests/fixtures/codex_home
 
 All tests use committed synthetic fixtures or temporary directories. They must never inspect the
 developer's real Codex history.
+
+### macOS editable-install caveat
+
+A regular `python -m pip install .` installs package files normally and does not depend on a
+`.pth` file. A setuptools editable install uses a generated file such as
+`__editable__.codex_insights-0.1.0.pth` to add this repository's `src/` directory at Python
+startup.
+
+Python 3.14 on macOS skips a `.pth` whose filesystem flags include `UF_HIDDEN`. This can produce a
+misleading `ModuleNotFoundError` even when the editable file contains the correct source path. It
+is filesystem metadata on the development environment, not a Codex source-discovery or history
+ingestion failure.
+
+The supported setup helper prevents the observed condition by defaulting to the non-dot-prefixed
+`venv-acceptance` directory. It then verifies that the editable artifact is inside that active
+environment, checks its macOS flags, and starts a fresh Python process to confirm the file was not
+skipped. If `UF_HIDDEN` is present, the helper runs targeted `chflags nohidden` only on the verified
+Codex Insights editable `.pth`; it never recursively changes an environment or touches unrelated
+`.pth` files. The guard waits briefly and fails with instructions to recreate the environment if
+macOS reapplies the flag, as occurred in the affected dot-prefixed acceptance environment.
+
+To diagnose an existing editable environment without reinstalling, run the guard with that
+environment's Python:
+
+```bash
+path/to/environment/bin/python scripts/editable_install_guard.py
+```
+
+Avoid dot-prefixed development environments in macOS user-visible folders such as Desktop. The
+failure was not reproduced by a fresh dot-prefixed environment under `/tmp`, so the directory name
+alone is not a universal trigger; the supported non-dot name avoids the observed Desktop metadata
+interaction and the guard detects any recurrence.
 
 ## Planned architecture
 

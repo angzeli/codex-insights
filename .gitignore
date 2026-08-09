@@ -9,6 +9,7 @@ __pycache__/
 # Environments and build output
 .venv/
 venv/
+venv-acceptance/
 build/
 dist/
 
