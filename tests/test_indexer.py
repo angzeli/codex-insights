@@ -51,6 +51,7 @@ def test_index_normalizes_catalogue_usage_events_and_missing_rollouts(
         assert sessions["synthetic-thread-modern"]["repository_root"] is None
         assert sessions["synthetic-thread-modern"]["repository_name"] is None
         assert sessions["synthetic-thread-modern"]["model_provider"] == "synthetic-provider"
+        assert sessions["synthetic-thread-modern"]["client_source"] == "cli"
         assert sessions["synthetic-thread-modern"]["started_at"].endswith("Z")
 
         modern_usage = connection.execute(

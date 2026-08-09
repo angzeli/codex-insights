@@ -92,6 +92,7 @@ class NormalizedSourceSession:
     source_session_id: str
     source_type: str
     source_home: Path
+    client_source: str | None = None
     started_at: datetime | None = None
     updated_at: datetime | None = None
     apparent_ended_at: datetime | None = None

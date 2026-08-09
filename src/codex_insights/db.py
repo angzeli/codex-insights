@@ -7,7 +7,7 @@ from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 _MIGRATION_1 = """
 CREATE TABLE source_sessions (
@@ -98,7 +98,12 @@ CREATE TABLE index_runs (
 );
 """
 
-_MIGRATIONS = {1: _MIGRATION_1}
+_MIGRATION_2 = """
+ALTER TABLE source_sessions ADD COLUMN client_source TEXT;
+CREATE INDEX source_sessions_client_source_idx ON source_sessions(client_source);
+"""
+
+_MIGRATIONS = {1: _MIGRATION_1, 2: _MIGRATION_2}
 
 
 class UnsafeDatabasePathError(ValueError):

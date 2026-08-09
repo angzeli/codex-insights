@@ -45,8 +45,12 @@ def test_index_schema_is_versioned_and_normalized(tmp_path: Path) -> None:
             for row in connection.execute("SELECT name FROM sqlite_schema WHERE type = 'table'")
         }
         version = connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0]
+        session_columns = {
+            str(row[1]) for row in connection.execute("PRAGMA table_info(source_sessions)")
+        }
 
     assert version == SCHEMA_VERSION
+    assert "client_source" in session_columns
     assert {
         "source_sessions",
         "usage",

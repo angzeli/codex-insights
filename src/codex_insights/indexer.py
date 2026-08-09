@@ -257,13 +257,14 @@ def _upsert_session_metadata(
         cursor = connection.execute(
             """
             INSERT INTO source_sessions(
-                source_session_id, source_type, source_home, started_at, updated_at,
+                source_session_id, source_type, source_home, client_source, started_at, updated_at,
                 apparent_ended_at, source_timezone_offset_minutes, cwd, repository_root,
                 repository_name, git_branch, git_sha, git_origin_url, model, model_provider,
                 codex_version, archived, rollout_path, source_db_path, source_path,
                 first_ingested_at, last_ingested_at
             ) VALUES (
-                :source_session_id, :source_type, :source_home, :started_at, :updated_at,
+                :source_session_id, :source_type, :source_home, :client_source, :started_at,
+                :updated_at,
                 :apparent_ended_at, :source_timezone_offset_minutes, :cwd, :repository_root,
                 :repository_name, :git_branch, :git_sha, :git_origin_url, :model,
                 :model_provider, :codex_version, :archived, :rollout_path, :source_db_path,
@@ -282,7 +283,8 @@ def _upsert_session_metadata(
         connection.execute(
             """
             UPDATE source_sessions
-            SET started_at = :started_at, updated_at = :updated_at,
+            SET client_source = :client_source, started_at = :started_at,
+                updated_at = :updated_at,
                 apparent_ended_at = :apparent_ended_at,
                 source_timezone_offset_minutes = :source_timezone_offset_minutes,
                 cwd = :cwd, repository_root = :repository_root,
@@ -304,6 +306,7 @@ def _session_values(session: NormalizedSourceSession) -> dict[str, object]:
         "source_session_id": session.source_session_id,
         "source_type": session.source_type,
         "source_home": str(session.source_home),
+        "client_source": session.client_source,
         "started_at": _format_datetime(session.started_at),
         "updated_at": _format_datetime(session.updated_at),
         "apparent_ended_at": _format_datetime(session.apparent_ended_at),

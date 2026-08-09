@@ -162,7 +162,8 @@ metadata—rather than depending on the literal name `threads` or the version `s
 Recognized source values are mapped inside the adapter:
 
 - catalogue timestamps, working directory, archive state, model/provider, Git metadata, and
-  rollout path become stable session fields;
+  rollout path become stable session fields; the catalogue's client source is retained separately
+  from the stable `codex-local` adapter type;
 - `session_meta` may fill missing working-directory, model/provider, and Codex-version metadata;
 - `total_token_usage` becomes a `cumulative_total`; legacy usage records are summed only when no
   cumulative total is available and are labelled `summed_event_deltas`;

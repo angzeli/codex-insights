@@ -17,6 +17,7 @@ from codex_insights.adapters import CodexLocalAdapter, SourceAuditResult
 from codex_insights.adapters.audit_models import FieldObservation
 from codex_insights.config import resolve_codex_home, resolve_index_path
 from codex_insights.db import UnsafeDatabasePathError, inspect_index
+from codex_insights.history_cli import register_history_commands
 from codex_insights.indexer import index_source
 
 app = typer.Typer(
@@ -25,6 +26,7 @@ app = typer.Typer(
     no_args_is_help=True,
 )
 console = Console()
+register_history_commands(app)
 
 
 @app.command()

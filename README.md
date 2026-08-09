@@ -7,10 +7,10 @@ uploading a user's private working history.
 
 ## Project status
 
-The first local indexing foundation is now implemented. The CLI can run a bounded source audit,
-incrementally index normalized session metadata and aggregates, and inspect the separate analytics
-database. Project/model reports, Git correlation, outcome heuristics, content search, and a
-dashboard remain future work.
+The local indexing and core history-exploration foundation is implemented. The CLI can run a
+bounded source audit, incrementally index normalized session metadata and aggregates, list and
+inspect sessions, and summarize repository/model activity. Git commit correlation, outcome
+heuristics, content search, and a dashboard remain future work.
 
 ```text
 codex-insights --help
@@ -20,6 +20,11 @@ codex-insights doctor --codex-home /path/to/codex-home
 codex-insights audit-source --codex-home /path/to/codex-home
 codex-insights index --codex-home /path/to/codex-home --db /path/to/index.sqlite3
 codex-insights db-info --db /path/to/codex-insights.sqlite3
+codex-insights sessions --since 7d
+codex-insights session SESSION_ID
+codex-insights repos
+codex-insights models
+codex-insights stats
 ```
 
 Codex home resolution uses this precedence:
@@ -74,6 +79,35 @@ codex-insights index --codex-home /path/to/codex-home --db /path/to/index.sqlite
 codex-insights db-info --db /path/to/index.sqlite3
 ```
 
+## Explore indexed history
+
+History commands query only the normalized Codex Insights database. They never reopen rollout
+files or print transcript content.
+
+```bash
+# Newest sessions first; paths are hidden in this compact view.
+codex-insights sessions --since 7d --active --limit 25
+
+# Filters can be combined. Relative durations include values such as 24h, 7d, and 30d.
+codex-insights sessions --repo my-project --model model-name --source cli
+
+# A full ID or an unambiguous prefix is accepted.
+codex-insights session 019fe51f
+
+codex-insights repos
+codex-insights models
+codex-insights stats
+
+# Machine-readable forms are available on every history command.
+codex-insights sessions --since 30d --json
+codex-insights session 019fe51f --json
+```
+
+`--since` is inclusive. An ISO timestamp supplied to `--until` is exclusive; a date-only value
+includes that complete calendar day. Stored timestamps are UTC, while human-readable tables render
+times in the local timezone. Missing token data is shown as `unknown` and serialized as `null`, not
+treated as zero. Sessions without a resolved Git root appear under `Outside Git repositories`.
+
 See [docs/data-safety.md](docs/data-safety.md) for the enforceable policy.
 Observed source concepts and unstable assumptions are tracked in
 [docs/source-format.md](docs/source-format.md).
@@ -123,6 +157,8 @@ retaining raw tool stdout or stderr, while `analytics/` remains independent of t
 The database module enforces separation between Codex home and the analyzer index. The core
 indexer consumes only the normalized adapter contract and therefore does not depend on a particular
 state database version, table name, rollout directory depth, or undocumented event name.
+Reusable history queries live under `analytics/`; terminal and JSON formatting remain in the CLI
+layer and never query Codex-owned storage.
 
 More detail is in [docs/architecture.md](docs/architecture.md).
 The normalized tables and migration policy are documented in

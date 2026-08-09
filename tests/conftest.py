@@ -8,6 +8,8 @@ from pathlib import Path
 
 import pytest
 
+from codex_insights.db import open_index
+
 
 @pytest.fixture
 def synthetic_codex_home() -> Path:
@@ -25,3 +27,171 @@ def synthetic_audit_home(tmp_path: Path) -> Path:
     with sqlite3.connect(codex_home / "state_7.sqlite") as connection:
         connection.executescript(schema)
     return codex_home
+
+
+@pytest.fixture
+def analytics_database(tmp_path: Path) -> tuple[Path, Path]:
+    """Create a normalized database with deterministic synthetic history rows."""
+
+    database = tmp_path / "analytics" / "index.sqlite3"
+    codex_home = tmp_path / "synthetic-codex-home"
+    source_home = str(codex_home)
+    sessions = (
+        (
+            "session-alpha-one-1111",
+            "cli",
+            "2026-08-01T00:00:00Z",
+            "2026-08-01T01:30:00Z",
+            "/work/repo-one",
+            "/repos/repo-one",
+            "repo-one",
+            "main",
+            "model-a",
+            "provider-a",
+            0,
+        ),
+        (
+            "session-alpha-two-2222",
+            "editor",
+            "2026-08-07T12:00:00Z",
+            "2026-08-07T12:30:00Z",
+            "/work/repo-one",
+            "/repos/repo-one",
+            "repo-one",
+            "archive",
+            "model-b",
+            "provider-b",
+            1,
+        ),
+        (
+            "session-beta-3333",
+            "cli",
+            "2026-08-08T23:59:59Z",
+            "2026-08-09T00:09:59Z",
+            "/work/outside-git",
+            None,
+            None,
+            None,
+            "model-a",
+            "provider-a",
+            0,
+        ),
+        (
+            "session-boundary-4444",
+            "cli",
+            "2026-08-09T00:00:00Z",
+            None,
+            "/work/repo-two",
+            "/repos/repo-two",
+            "repo-two",
+            "feature/test",
+            None,
+            None,
+            0,
+        ),
+    )
+    with open_index(database, codex_home=codex_home) as connection:
+        for row in sessions:
+            connection.execute(
+                """
+                INSERT INTO source_sessions(
+                    source_session_id, source_type, source_home, client_source,
+                    started_at, updated_at, apparent_ended_at, cwd, repository_root,
+                    repository_name, git_branch, model, model_provider, codex_version,
+                    archived, rollout_path, source_db_path, source_path,
+                    first_ingested_at, last_ingested_at
+                ) VALUES (
+                    ?, 'codex-local', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'synthetic-1.0',
+                    ?, ?, ?, ?, '2026-08-09T01:00:00Z', '2026-08-09T01:00:00Z'
+                )
+                """,
+                (
+                    row[0],
+                    source_home,
+                    row[1],
+                    row[2],
+                    row[2],
+                    row[3],
+                    row[4],
+                    row[5],
+                    row[6],
+                    row[7],
+                    row[8],
+                    row[9],
+                    row[10],
+                    f"/rollouts/{row[0]}.jsonl",
+                    "/state_7.sqlite",
+                    f"/rollouts/{row[0]}.jsonl",
+                ),
+            )
+
+        identifiers = {
+            str(row["source_session_id"]): int(row["id"])
+            for row in connection.execute("SELECT id, source_session_id FROM source_sessions")
+        }
+        usage_rows = (
+            (identifiers["session-alpha-one-1111"], "cumulative_total", 80, 10, 20, 100, 1),
+            (identifiers["session-alpha-two-2222"], "unavailable", 0, 0, 0, 0, 0),
+            (identifiers["session-beta-3333"], "summed_event_deltas", 40, 5, 10, 50, 2),
+            (identifiers["session-boundary-4444"], "unavailable", 0, 0, 0, 0, 0),
+        )
+        connection.executemany(
+            """
+            INSERT INTO usage(
+                source_session_id, usage_semantics, input_tokens, cached_input_tokens,
+                output_tokens, total_tokens, token_update_count, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, '2026-08-09T01:00:00Z')
+            """,
+            usage_rows,
+        )
+        connection.executemany(
+            """
+            INSERT INTO event_summary(source_session_id, category, event_count, updated_at)
+            VALUES (?, ?, ?, '2026-08-09T01:00:00Z')
+            """,
+            (
+                (identifiers["session-alpha-one-1111"], "user_message", 2),
+                (identifiers["session-alpha-one-1111"], "assistant_message", 3),
+                (identifiers["session-alpha-one-1111"], "tool_call", 1),
+                (identifiers["session-alpha-two-2222"], "unknown", 4),
+                (identifiers["session-beta-3333"], "shell_command", 2),
+            ),
+        )
+        coverage_rows = (
+            ("session-alpha-one-1111", "indexed", None, 1000, 1000),
+            (
+                "session-alpha-two-2222",
+                "indexed_with_warnings",
+                "malformed_lines=1;oversized_lines=0",
+                2000,
+                2000,
+            ),
+            ("session-beta-3333", "indexed", None, 3000, 3000),
+            ("session-boundary-4444", "missing", None, None, None),
+        )
+        connection.executemany(
+            """
+            INSERT INTO ingestion_state(
+                source_home, source_path, source_session_id, source_kind, size_bytes,
+                mtime_ns, last_parsed_byte_offset, parser_version,
+                source_schema_version, status, error, indexed_at
+            ) VALUES (
+                ?, ?, ?, 'rollout_jsonl', ?, 100, ?, 'synthetic-parser',
+                'state_7:threads', ?, ?, '2026-08-09T01:00:00Z'
+            )
+            """,
+            (
+                (
+                    source_home,
+                    f"/rollouts/{session_id}.jsonl",
+                    session_id,
+                    size_bytes,
+                    parsed_bytes,
+                    status,
+                    error,
+                )
+                for session_id, status, error, size_bytes, parsed_bytes in coverage_rows
+            ),
+        )
+        connection.commit()
+    return database, codex_home

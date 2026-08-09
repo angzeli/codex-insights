@@ -25,6 +25,7 @@ erDiagram
         integer id PK
         text source_session_id
         text source_type
+        text client_source
         text source_home
         text started_at
         text updated_at
@@ -80,6 +81,11 @@ type, resolved Codex home, and source session ID. The internal integer key is us
 relationships. Source paths and adapter provenance remain available so rows can be refreshed or
 diagnosed without retaining raw rollout records.
 
+`source_type` identifies the adapter, currently `codex-local`. Schema version 2 adds
+`client_source` for the catalogue's user-meaningful origin such as CLI or editor. Keeping these
+separate makes source filtering useful without confusing an unstable source value with adapter
+provenance.
+
 `usage` contains one aggregate row per session. `usage_semantics` distinguishes a source-reported
 `cumulative_total` from `summed_event_deltas`; `unavailable` means no trustworthy token record was
 observed. A zero value therefore does not by itself claim that the source reported zero tokens.
@@ -117,3 +123,15 @@ row and category counts transactionally, so rerunning the index cannot create du
 The six reported outcomes are session-candidate outcomes. A new metadata-only catalogue row whose
 rollout is missing is stored for provenance but reported as `skipped`, not `new`; consequently the
 database can contain more session catalogue rows than the `new` count from a first run.
+
+## History query semantics
+
+History commands read only these normalized tables. Session lists are ordered by start time
+descending and then full source session ID, producing deterministic results when timestamps tie.
+`since` boundaries are inclusive and timestamp `until` boundaries are exclusive. A date-only
+`until` is converted to midnight of the following day so the named calendar day is included.
+
+Rows whose usage semantics are `unavailable` return null token values through the query layer;
+their stored placeholder zeroes are never presented as measured usage. Repository aggregation
+groups null repository roots into `Outside Git repositories`, while the repository count in
+`stats` counts only resolved Git roots.

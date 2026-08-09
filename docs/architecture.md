@@ -51,8 +51,9 @@ replace `CodexLocalAdapter` without changing analytics or presentation code.
 - `adapters/`: contracts and format-specific read-only source access.
 - `db.py`: source read-only connections and the separate derived index.
 - `indexer.py`: source-independent incrementality, transactional upserts, and run accounting.
-- `analytics/`: future queries and classifications over normalized data.
+- `analytics/`: reusable read-only queries and future classifications over normalized data.
 - `cli.py`: user-facing commands and reports.
+- `history_cli.py`: compact terminal and JSON presentation for normalized history queries.
 
 ## Index lifecycle
 
@@ -65,6 +66,11 @@ The initial indexer asks an adapter for normalized catalogue candidates and pars
 whose rollout size, nanosecond mtime, parser version, or recognized source-schema version changed.
 Each session is committed independently, so one failed rollout does not roll back successful
 sessions. The run log records discovered, new, updated, unchanged, skipped, and failed counts.
+
+History exploration starts at the separate index. `analytics/queries.py` owns filtering, prefix
+resolution, deterministic ordering, aggregation, time-boundary semantics, and missing-data
+handling. It does not import the Codex-local adapter. `history_cli.py` converts those typed results
+to compact Rich tables or JSON and avoids absolute paths in ordinary session lists.
 
 ## Planned capability stages
 
