@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Environments and build output
+.venv/
+venv/
+build/
+dist/
+
+# Local analyzer state (never commit user-derived indexes)
+.codex-insights/
+*.sqlite
+*.sqlite3
+*.db
+
+# Local tooling and editor files
+.DS_Store
+.idea/
+.vscode/
+graphify-out/
