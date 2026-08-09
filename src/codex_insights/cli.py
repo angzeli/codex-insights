@@ -23,6 +23,7 @@ from codex_insights.indexer import index_source
 from codex_insights.outcome_cli import register_outcome_command
 from codex_insights.prompt_cli import register_prompt_commands
 from codex_insights.provenance_cli import register_provenance_command
+from codex_insights.report_cli import register_report_commands
 from codex_insights.task_cli import register_task_command
 from codex_insights.tool_cli import register_tool_commands
 from codex_insights.usage_cli import register_usage_command
@@ -41,6 +42,7 @@ register_prompt_commands(app)
 register_tool_commands(app)
 register_outcome_command(app)
 register_task_command(app)
+register_report_commands(app)
 
 
 @app.command()
