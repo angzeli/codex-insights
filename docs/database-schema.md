@@ -88,8 +88,9 @@ provenance.
 
 `usage` contains one aggregate row per session. `usage_semantics` distinguishes a source-reported
 `cumulative_total` from `summed_event_deltas`; `unavailable` means no trustworthy token record was
-observed. A zero value therefore does not by itself claim that the source reported zero tokens.
-The schema also includes cache-write input tokens because the source audit observed that field.
+observed. Schema version 3 makes each token metric nullable so an absent field remains different
+from a source-reported zero. The schema also includes cache-write input tokens because the source
+audit observed that field.
 
 `event_summary` stores counts keyed by normalized categories. It does not store event payloads,
 message bodies, command arguments, patches, stdout, stderr, environment dumps, or hidden reasoning.
@@ -131,7 +132,19 @@ descending and then full source session ID, producing deterministic results when
 `since` boundaries are inclusive and timestamp `until` boundaries are exclusive. A date-only
 `until` is converted to midnight of the following day so the named calendar day is included.
 
-Rows whose usage semantics are `unavailable` return null token values through the query layer;
-their stored placeholder zeroes are never presented as measured usage. Repository aggregation
-groups null repository roots into `Outside Git repositories`, while the repository count in
-`stats` counts only resolved Git roots.
+Rows whose usage semantics are `unavailable` return null token values through the query layer.
+Repository aggregation groups null repository roots into `Outside Git repositories`, while the
+repository count in `stats` counts only resolved Git roots.
+
+## Usage analytics semantics
+
+`analytics/usage.py` reads one normalized usage row per session. It sums only non-null fields and
+reports field-level session coverage alongside every aggregate. Mean, median, and nearest-rank p90
+tokens/session are calculated only from non-null total-token values; missing sessions do not enter
+the distribution as zero.
+
+Repository grouping uses `repository_root` as its identity and `repository_name` as its display
+label. Model grouping uses the normalized model/provider pair. Day and Monday-starting week groups
+convert UTC session timestamps into the requested local or IANA timezone before assigning buckets.
+Sessions/day uses the selected calendar window; with no time filter it uses the inclusive span from
+the first to latest matching activity date.

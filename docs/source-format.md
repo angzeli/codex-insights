@@ -165,8 +165,14 @@ Recognized source values are mapped inside the adapter:
   rollout path become stable session fields; the catalogue's client source is retained separately
   from the stable `codex-local` adapter type;
 - `session_meta` may fill missing working-directory, model/provider, and Codex-version metadata;
-- `total_token_usage` becomes a `cumulative_total`; legacy usage records are summed only when no
-  cumulative total is available and are labelled `summed_event_deltas`;
+- `total_token_usage` is interpreted as a cumulative session snapshot: the final observed snapshot
+  replaces earlier snapshots and they are never summed;
+- `last_token_usage` is interpreted as a last-turn delta; recognized legacy delta records are
+  summed only when the rollout contains no cumulative snapshot, and the result is labelled
+  `summed_event_deltas`;
+- when one record exposes both cumulative and last-turn values, the cumulative snapshot wins;
+  absent token fields remain unknown rather than becoming zero, and `total_tokens` is derived only
+  when both input and output are known;
 - source-specific message, token, function/custom-tool, shell, patch, failure, and unknown records
   become aggregate event categories;
 - all other payload values are discarded after the streaming record is classified.
@@ -181,3 +187,8 @@ This version indexes sessions represented in a recognized catalogue. A missing, 
 out-of-home rollout is retained as metadata-only session provenance and reported as skipped; it is
 never followed outside the configured Codex home. Catalogue-free orphan rollouts are not guessed
 into synthetic session identities in this version.
+
+The cumulative-versus-delta interpretation is based on the audited field names and observed event
+placement in the current undocumented format. It is an adapter rule, not a Codex API guarantee.
+The parser version changes when this interpretation changes so existing rollouts are conservatively
+reparsed into the separate analyzer index.

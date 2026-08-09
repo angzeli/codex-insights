@@ -54,6 +54,8 @@ replace `CodexLocalAdapter` without changing analytics or presentation code.
 - `analytics/`: reusable read-only queries and future classifications over normalized data.
 - `cli.py`: user-facing commands and reports.
 - `history_cli.py`: compact terminal and JSON presentation for normalized history queries.
+- `analytics/usage.py`: token-coverage-aware grouping, percentiles, and timezone bucketing.
+- `usage_cli.py`: compact usage tables and structured JSON output.
 
 ## Index lifecycle
 
@@ -71,6 +73,11 @@ History exploration starts at the separate index. `analytics/queries.py` owns fi
 resolution, deterministic ordering, aggregation, time-boundary semantics, and missing-data
 handling. It does not import the Codex-local adapter. `history_cli.py` converts those typed results
 to compact Rich tables or JSON and avoids absolute paths in ordinary session lists.
+
+Usage analytics follows the same boundary. It consumes one normalized usage row per session,
+preserves null fields as missing data, attributes repositories only through normalized repository
+identity, and applies timezone conversion after reading UTC timestamps. Presentation code receives
+typed results and never opens rollout files or Codex-owned databases.
 
 ## Planned capability stages
 

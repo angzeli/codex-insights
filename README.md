@@ -5,12 +5,11 @@ sessions. Its goal is to make patterns such as project activity, token use, mode
 tool frequency, Git correlation, outcomes, and efficiency trends understandable without
 uploading a user's private working history.
 
-## Project status
+## Project status: v0.1.0 MVP
 
-The local indexing and core history-exploration foundation is implemented. The CLI can run a
-bounded source audit, incrementally index normalized session metadata and aggregates, list and
-inspect sessions, and summarize repository/model activity. Git commit correlation, outcome
-heuristics, content search, and a dashboard remain future work.
+The local-first command-line MVP is ready for daily use. It can audit an installed Codex layout,
+incrementally index normalized session metadata, explore individual sessions, and report token
+usage by repository, model, day, or week with explicit data coverage.
 
 ```text
 codex-insights --help
@@ -25,6 +24,8 @@ codex-insights session SESSION_ID
 codex-insights repos
 codex-insights models
 codex-insights stats
+codex-insights usage --since 7d
+codex-insights usage --since 7d --by repo
 ```
 
 Codex home resolution uses this precedence:
@@ -32,6 +33,48 @@ Codex home resolution uses this precedence:
 1. `--codex-home`
 2. `CODEX_HOME`
 3. `~/.codex`
+
+## First-run flow
+
+Python 3.11 or newer is required. From a local checkout:
+
+1. Install Codex Insights.
+
+   ```bash
+   python3 -m venv .venv
+   source .venv/bin/activate
+   python -m pip install .
+   ```
+
+2. Confirm the runtime and detected Codex home without reading session histories.
+
+   ```bash
+   codex-insights doctor
+   ```
+
+3. Run the bounded, metadata-only source audit.
+
+   ```bash
+   codex-insights audit-source
+   ```
+
+4. Build or incrementally refresh the separate analytics index.
+
+   ```bash
+   codex-insights index
+   ```
+
+5. Check indexed coverage and recent activity.
+
+   ```bash
+   codex-insights stats
+   ```
+
+6. Review the last seven days by normalized repository.
+
+   ```bash
+   codex-insights usage --since 7d --by repo
+   ```
 
 ## Local-first and read-only
 
@@ -108,6 +151,41 @@ includes that complete calendar day. Stored timestamps are UTC, while human-read
 times in the local timezone. Missing token data is shown as `unknown` and serialized as `null`, not
 treated as zero. Sessions without a resolved Git root appear under `Outside Git repositories`.
 
+## Analyze token usage
+
+`usage` reports known token totals and always shows how many matching sessions contain token
+records. Missing per-session or per-field values stay `unknown` in tables and `null` in JSON.
+
+```bash
+codex-insights usage
+codex-insights usage --since 7d --by repo --top 10
+codex-insights usage --since 30d --by model --top 5
+codex-insights usage --by day --timezone Asia/Shanghai
+codex-insights usage --by week --timezone local
+codex-insights usage --repo my-project --model model-name --json
+```
+
+Repository groups come only from the normalized repository root/name recorded during indexing;
+arbitrary working-directory substrings are not treated as repository identities. Day and week
+buckets use `--timezone`, whose default is the machine's local timezone. Weeks start on Monday.
+Mean, median, and nearest-rank p90 tokens/session use only sessions with known total-token data.
+Sessions/day uses the selected calendar window, or the inclusive first-to-latest activity span
+when no time filter is supplied.
+
+This abridged example is generated from the repository's synthetic four-session fixture—not real
+history:
+
+```text
+$ codex-insights usage --by repo --timezone UTC
+150 known tokens across 2/4 sessions with token records (50.0%)
+Timezone: UTC
+
+Repository                Sessions  Known tokens  Token data  Mean/session    P90  Sessions/day
+repo-one                         2           100         1/2         100.0  100.0          0.22
+Outside Git repositories        1            50         1/1          50.0   50.0          0.11
+repo-two                         1       unknown         0/1       unknown unknown          0.11
+```
+
 See [docs/data-safety.md](docs/data-safety.md) for the enforceable policy.
 Observed source concepts and unstable assumptions are tracked in
 [docs/source-format.md](docs/source-format.md).
@@ -163,6 +241,17 @@ layer and never query Codex-owned storage.
 More detail is in [docs/architecture.md](docs/architecture.md).
 The normalized tables and migration policy are documented in
 [docs/database-schema.md](docs/database-schema.md).
+
+## Intentionally not implemented in v0.1.0
+
+- prompt text search;
+- Git commit correlation;
+- session outcome classification;
+- a dashboard or web server;
+- LLM-based transcript analysis.
+
+These features require separate privacy, evidence, and product-design work. The MVP does not store
+the raw content they would need.
 
 ## License
 
