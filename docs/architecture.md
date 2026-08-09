@@ -49,6 +49,7 @@ replace `CodexLocalAdapter` without changing analytics or presentation code.
 - `discovery.py`: bounded metadata-only environment checks.
 - `models.py`: normalized, source-independent records.
 - `lineage.py`: exact-vector thread topology and token-lineage evidence rules.
+- `provenance.py`: ordered, fingerprint-based observed-versus-originated event evidence.
 - `adapters/`: contracts and format-specific read-only source access.
 - `db.py`: source read-only connections and the separate derived index.
 - `indexer.py`: source-independent incrementality, transactional upserts, and run accounting.
@@ -80,6 +81,13 @@ thread relationships, preserves null fields as missing data, and uses lineage-ad
 contributions only when exact vector evidence supports them. Repository/model and time attribution
 stay with the contributing child session. Presentation code receives typed results and never opens
 rollout files or Codex-owned databases.
+
+Selected non-token records pass through a second privacy-safe adapter boundary. The adapter
+canonicalizes event-family semantics transiently and returns only normalized fingerprints,
+ordinals, timestamps, and approximate lengths. `provenance.py` combines those observations with
+explicit thread relationships and ordering evidence. The derived index preserves both physical
+observations and conservative origin mappings; later features consume this API instead of assuming
+that every record in a child rollout was created by that child.
 
 ## Planned capability stages
 

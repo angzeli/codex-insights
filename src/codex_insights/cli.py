@@ -19,6 +19,7 @@ from codex_insights.config import resolve_codex_home, resolve_index_path
 from codex_insights.db import UnsafeDatabasePathError, inspect_index
 from codex_insights.history_cli import register_history_commands
 from codex_insights.indexer import index_source
+from codex_insights.provenance_cli import register_provenance_command
 from codex_insights.usage_cli import register_usage_command
 
 app = typer.Typer(
@@ -29,6 +30,7 @@ app = typer.Typer(
 console = Console()
 register_history_commands(app)
 register_usage_command(app)
+register_provenance_command(app)
 
 
 @app.command()

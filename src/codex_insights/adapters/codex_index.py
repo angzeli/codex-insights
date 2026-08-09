@@ -12,10 +12,14 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from codex_insights.adapters.codex_events import extract_event
 from codex_insights.db import open_source_sqlite_readonly
 from codex_insights.models import (
     EventCategory,
+    EventFamily,
     NormalizedEventCount,
+    NormalizedEventObservation,
+    NormalizedPromptCandidate,
     NormalizedSourceSession,
     NormalizedThreadRelationship,
     NormalizedTokenSnapshot,
@@ -26,7 +30,7 @@ from codex_insights.models import (
     UsageVector,
 )
 
-PARSER_VERSION = "codex-local-v3"
+PARSER_VERSION = "codex-local-v4"
 MAX_ROLLOUT_LINE_BYTES = 1024 * 1024
 
 _COLUMN_ALIASES: dict[str, tuple[str, ...]] = {
@@ -199,6 +203,9 @@ def parse_rollout(candidate: SourceSessionCandidate) -> ParsedSourceSession:
     summed_deltas = _empty_usage()
     token_update_count = 0
     token_snapshots: list[NormalizedTokenSnapshot] = []
+    event_observations: list[NormalizedEventObservation] = []
+    prompt_candidates: list[NormalizedPromptCandidate] = []
+    family_ordinals: Counter[EventFamily] = Counter()
     malformed = 0
     oversized = 0
     parsed_bytes = 0
@@ -211,7 +218,7 @@ def parse_rollout(candidate: SourceSessionCandidate) -> ParsedSourceSession:
     codex_version = session.codex_version
 
     with path.open("rb") as handle:
-        for line in handle:
+        for source_ordinal, line in enumerate(handle):
             parsed_bytes += len(line)
             if len(line) > MAX_ROLLOUT_LINE_BYTES:
                 oversized += 1
@@ -246,6 +253,26 @@ def parse_rollout(candidate: SourceSessionCandidate) -> ParsedSourceSession:
                     or payload_map.get("cli_version")
                     or payload_map.get("version")
                 )
+
+            extracted = extract_event(
+                record,
+                source_ordinal=source_ordinal,
+                family_ordinal=0,
+                occurred_at=timestamp,
+            )
+            if extracted is not None:
+                family = extracted.observation.family
+                extracted = replace(
+                    extracted,
+                    observation=replace(
+                        extracted.observation,
+                        family_ordinal=family_ordinals[family],
+                    ),
+                )
+                family_ordinals[family] += 1
+                event_observations.append(extracted.observation)
+                if extracted.prompt is not None:
+                    prompt_candidates.append(extracted.prompt)
 
             category = _event_category(record, payload_map)
             if category is not None:
@@ -311,6 +338,8 @@ def parse_rollout(candidate: SourceSessionCandidate) -> ParsedSourceSession:
         oversized_line_count=oversized,
         parsed_byte_count=parsed_bytes,
         token_snapshots=tuple(token_snapshots),
+        event_observations=tuple(event_observations),
+        prompt_candidates=tuple(prompt_candidates),
     )
 
 

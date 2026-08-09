@@ -84,12 +84,32 @@ erDiagram
         integer baseline_total_tokens
         integer incremental_total_tokens
     }
+    EVENT_OBSERVATIONS {
+        integer id PK
+        integer observed_session_id FK
+        integer origin_session_id FK
+        integer origin_event_id FK
+        text event_family
+        integer source_ordinal
+        text fingerprint
+        text provenance_status
+    }
+    EVENT_REPLAY_SUMMARY {
+        integer relationship_id PK,FK
+        text event_family PK
+        integer inherited_events
+        integer ambiguous_events
+        text provenance_status
+    }
 
     SOURCE_SESSIONS ||--|| USAGE : has
     SOURCE_SESSIONS ||--o{ EVENT_SUMMARY : summarizes
     SOURCE_SESSIONS ||--o{ THREAD_RELATIONSHIPS : parent
     SOURCE_SESSIONS ||--o| THREAD_RELATIONSHIPS : child
     SOURCE_SESSIONS ||--o| TOKEN_LINEAGE : reconciles
+    SOURCE_SESSIONS ||--o{ EVENT_OBSERVATIONS : observes
+    EVENT_OBSERVATIONS ||--o{ EVENT_OBSERVATIONS : originates
+    THREAD_RELATIONSHIPS ||--o{ EVENT_REPLAY_SUMMARY : summarizes
 ```
 
 ## Table contracts
@@ -123,6 +143,12 @@ observed `usage` vector while exposing a lineage-adjusted aggregate contribution
 `event_summary` stores counts keyed by normalized categories. It does not store event payloads,
 message bodies, command arguments, patches, stdout, stderr, environment dumps, or hidden reasoning.
 
+`event_observations` stores selected semantic record fingerprints, order, family, and conservative
+origin mappings. `event_replay_summary` aggregates the evidence per explicit parent-child edge and
+event family. Neither table stores raw event bodies. A fingerprint is combined with explicit
+lineage and sequence evidence; it is never treated as provenance proof on its own. See
+`docs/event-provenance.md` for exact and ambiguous semantics.
+
 `ingestion_state` records inexpensive file identity metadata, parser/schema versions, status, and
 the last safe byte offset. Size and nanosecond mtime are the initial incremental-change signal;
 content hashes are intentionally omitted until evidence shows they are needed.
@@ -147,7 +173,8 @@ only that session and increments the run's failed count.
 Size plus nanosecond mtime is the initial file-change signal. Parser-version and recognized
 source-schema-version changes also force a reparse. Unchanged files retain their usage and event
 rows byte-for-byte unless catalogue metadata changed. Reparsed sessions replace their one usage
-row and category counts transactionally, so rerunning the index cannot create duplicates.
+row, category counts, and compact semantic observations transactionally, so rerunning the index
+cannot create duplicates.
 
 After session upserts, the adapter discovers explicit thread relationships. Lineage is recomputed
 only for new relationships, changed endpoints, an algorithm-version change, or missing lineage.

@@ -16,6 +16,9 @@ from codex_insights.lineage import (
     assess_token_lineage,
 )
 from codex_insights.models import (
+    EventFamily,
+    EventProvenanceStatus,
+    NormalizedEventObservation,
     NormalizedSourceSession,
     NormalizedThreadRelationship,
     NormalizedUsage,
@@ -23,6 +26,12 @@ from codex_insights.models import (
     SourceSessionCandidate,
     TokenLineageAssessment,
     UsageVector,
+)
+from codex_insights.provenance import (
+    PROVENANCE_ALGORITHM_VERSION,
+    EventFamilyAssessment,
+    assess_event_provenance,
+    mirrored_user_observations,
 )
 
 
@@ -185,6 +194,7 @@ def _index_candidate(
             session_id, is_new, _ = _upsert_session_metadata(connection, parsed.session)
             _replace_usage(connection, session_id, parsed.session.usage)
             _replace_event_summary(connection, session_id, parsed.session)
+            _replace_event_observations(connection, session_id, parsed)
             _upsert_ingestion_state(
                 connection,
                 candidate,
@@ -363,6 +373,13 @@ def _reconcile_relationships(
             )
         with connection:
             _upsert_token_lineage(connection, parent_id, child_id, assessment)
+    _reconcile_event_provenance(
+        connection,
+        internal_ids=internal_ids,
+        relationships=relationships,
+        duplicate_children=duplicate_children,
+        cycle_source_ids=topology.cycle_nodes,
+    )
     return tuple(warnings)
 
 
@@ -539,6 +556,397 @@ def _upsert_token_lineage(
         """,
         (child_session_id, *values, _utc_now()),
     )
+
+
+def _reconcile_event_provenance(
+    connection: sqlite3.Connection,
+    *,
+    internal_ids: dict[str, int],
+    relationships: tuple[NormalizedThreadRelationship, ...],
+    duplicate_children: set[str],
+    cycle_source_ids: frozenset[str],
+) -> None:
+    """Resolve event origins from explicit topology and exact ordered fingerprints."""
+
+    events_by_session = {
+        session_id: _event_rows(connection, session_id)
+        for session_id in internal_ids.values()
+    }
+    child_source_ids = {item.child_source_session_id for item in relationships}
+    processed: set[int] = set()
+    with connection:
+        for source_id, session_id in sorted(internal_ids.items()):
+            rows = events_by_session[session_id]
+            if source_id in child_source_ids:
+                continue
+            _mark_root_events(connection, session_id, rows)
+            processed.add(session_id)
+
+    pending = [
+        item
+        for item in relationships
+        if item.child_source_session_id not in duplicate_children
+        and item.parent_source_session_id in internal_ids
+        and item.child_source_session_id in internal_ids
+    ]
+    while pending:
+        progressed = False
+        remaining: list[NormalizedThreadRelationship] = []
+        for relationship in pending:
+            parent_id = internal_ids[relationship.parent_source_session_id]
+            child_id = internal_ids[relationship.child_source_session_id]
+            if (
+                relationship.parent_source_session_id not in cycle_source_ids
+                and relationship.child_source_session_id not in cycle_source_ids
+                and parent_id not in processed
+            ):
+                remaining.append(relationship)
+                continue
+            _reconcile_event_edge(
+                connection,
+                relationship=relationship,
+                parent_session_id=parent_id,
+                child_session_id=child_id,
+                parent_rows=_event_rows(connection, parent_id),
+                child_rows=_event_rows(connection, child_id),
+                cyclic=(
+                    relationship.parent_source_session_id in cycle_source_ids
+                    or relationship.child_source_session_id in cycle_source_ids
+                ),
+            )
+            events_by_session[child_id] = _event_rows(connection, child_id)
+            processed.add(child_id)
+            progressed = True
+        if not progressed:
+            for relationship in remaining:
+                child_id = internal_ids[relationship.child_source_session_id]
+                with connection:
+                    _mark_events_unknown(
+                        connection,
+                        events_by_session[child_id],
+                        evidence="unresolved_parent_order",
+                    )
+            break
+        pending = remaining
+    unresolved_children = {
+        internal_ids[source_id]
+        for source_id in child_source_ids
+        if source_id in internal_ids and internal_ids[source_id] not in processed
+    }
+    with connection:
+        for child_id in sorted(unresolved_children):
+            _mark_events_unknown(
+                connection,
+                _event_rows(connection, child_id),
+                evidence="unresolved_explicit_parent",
+            )
+
+
+def _reconcile_event_edge(
+    connection: sqlite3.Connection,
+    *,
+    relationship: NormalizedThreadRelationship,
+    parent_session_id: int,
+    child_session_id: int,
+    parent_rows: tuple[sqlite3.Row, ...],
+    child_rows: tuple[sqlite3.Row, ...],
+    cyclic: bool,
+) -> None:
+    parent = tuple(_event_observation(row) for row in parent_rows)
+    child = tuple(_event_observation(row) for row in child_rows)
+    assessment = assess_event_provenance(parent, child, cyclic=cyclic)
+    mirrored = mirrored_user_observations(child)
+    with connection:
+        for decision in assessment.decisions:
+            if decision.child_index in mirrored:
+                continue
+            child_row = child_rows[decision.child_index]
+            status = decision.status
+            origin_session_id: int | None = None
+            origin_event_id: int | None = None
+            evidence = decision.evidence_type
+            confidence = decision.confidence
+            if decision.parent_index is not None:
+                parent_row = parent_rows[decision.parent_index]
+                parent_status = EventProvenanceStatus(str(parent_row["provenance_status"]))
+                if parent_status in {
+                    EventProvenanceStatus.ORIGIN,
+                    EventProvenanceStatus.INHERITED_EXACT,
+                    EventProvenanceStatus.INHERITED_PREFIX,
+                    EventProvenanceStatus.OBSERVED_DUPLICATE,
+                }:
+                    origin_session_id = int(
+                        parent_row["origin_session_id"] or parent_session_id
+                    )
+                    origin_event_id = int(parent_row["origin_event_id"] or parent_row["id"])
+                else:
+                    status = EventProvenanceStatus.AMBIGUOUS
+                    evidence = "matched_parent_event_has_ambiguous_origin"
+                    confidence = "none"
+            elif status is EventProvenanceStatus.ORIGIN:
+                origin_session_id = child_session_id
+                origin_event_id = int(child_row["id"])
+            _update_event_provenance(
+                connection,
+                child_row,
+                status=status,
+                origin_session_id=origin_session_id,
+                origin_event_id=origin_event_id,
+                parent_session_id=parent_session_id,
+                evidence_type=evidence,
+                confidence=confidence,
+            )
+        _apply_mirrored_user_events(connection, child_session_id, child_rows)
+        relationship_id = _relationship_id(connection, relationship)
+        if relationship_id is not None:
+            _replace_event_replay_summary(connection, relationship_id, assessment.families)
+
+
+def _event_rows(
+    connection: sqlite3.Connection,
+    session_id: int,
+) -> tuple[sqlite3.Row, ...]:
+    return tuple(
+        connection.execute(
+            "SELECT * FROM event_observations WHERE observed_session_id = ? "
+            "ORDER BY source_ordinal",
+            (session_id,),
+        )
+    )
+
+
+def _event_observation(row: sqlite3.Row) -> NormalizedEventObservation:
+    return NormalizedEventObservation(
+        source_ordinal=int(row["source_ordinal"]),
+        family_ordinal=int(row["family_ordinal"]),
+        family=EventFamily(str(row["event_family"])),
+        fingerprint=str(row["fingerprint"]),
+        source_record_type=str(row["source_record_type"]),
+        source_payload_type=str(row["source_payload_type"]),
+        occurred_at=_stored_datetime(row["occurred_at"]),
+        stable_id_digest=(
+            str(row["stable_id_digest"]) if row["stable_id_digest"] is not None else None
+        ),
+        approximate_content_length=(
+            int(row["approximate_content_length"])
+            if row["approximate_content_length"] is not None
+            else None
+        ),
+        fingerprint_version=str(row["fingerprint_version"]),
+    )
+
+
+def _mark_root_events(
+    connection: sqlite3.Connection,
+    session_id: int,
+    rows: tuple[sqlite3.Row, ...],
+) -> None:
+    observations = tuple(_event_observation(row) for row in rows)
+    mirrored = mirrored_user_observations(observations)
+    for index, row in enumerate(rows):
+        if index in mirrored:
+            continue
+        _update_event_provenance(
+            connection,
+            row,
+            status=EventProvenanceStatus.ORIGIN,
+            origin_session_id=session_id,
+            origin_event_id=int(row["id"]),
+            parent_session_id=None,
+            evidence_type="no_explicit_parent",
+            confidence="high",
+        )
+    _apply_mirrored_user_events(connection, session_id, rows)
+
+
+def _mark_events_unknown(
+    connection: sqlite3.Connection,
+    rows: tuple[sqlite3.Row, ...],
+    *,
+    evidence: str,
+) -> None:
+    for row in rows:
+        _update_event_provenance(
+            connection,
+            row,
+            status=EventProvenanceStatus.UNKNOWN,
+            origin_session_id=None,
+            origin_event_id=None,
+            parent_session_id=None,
+            evidence_type=evidence,
+            confidence="none",
+        )
+
+
+def _apply_mirrored_user_events(
+    connection: sqlite3.Connection,
+    session_id: int,
+    rows: tuple[sqlite3.Row, ...],
+) -> None:
+    observations = tuple(_event_observation(row) for row in rows)
+    for duplicate_index, canonical_index in mirrored_user_observations(observations).items():
+        duplicate = connection.execute(
+            "SELECT * FROM event_observations WHERE id = ?",
+            (int(rows[duplicate_index]["id"]),),
+        ).fetchone()
+        canonical = connection.execute(
+            "SELECT * FROM event_observations WHERE id = ?",
+            (int(rows[canonical_index]["id"]),),
+        ).fetchone()
+        if duplicate is None or canonical is None:
+            continue
+        origin_session_id = (
+            int(canonical["origin_session_id"])
+            if canonical["origin_session_id"] is not None
+            else None
+        )
+        origin_event_id = (
+            int(canonical["origin_event_id"])
+            if canonical["origin_event_id"] is not None
+            else int(canonical["id"])
+        )
+        _update_event_provenance(
+            connection,
+            duplicate,
+            status=EventProvenanceStatus.OBSERVED_DUPLICATE,
+            origin_session_id=origin_session_id,
+            origin_event_id=origin_event_id,
+            parent_session_id=(
+                int(canonical["parent_session_id"])
+                if canonical["parent_session_id"] is not None
+                else None
+            ),
+            evidence_type="adjacent_mirrored_user_record",
+            confidence="high",
+        )
+
+
+def _update_event_provenance(
+    connection: sqlite3.Connection,
+    row: sqlite3.Row,
+    *,
+    status: EventProvenanceStatus,
+    origin_session_id: int | None,
+    origin_event_id: int | None,
+    parent_session_id: int | None,
+    evidence_type: str,
+    confidence: str,
+) -> None:
+    values = (
+        status.value,
+        origin_session_id,
+        origin_event_id,
+        parent_session_id,
+        evidence_type,
+        confidence,
+        PROVENANCE_ALGORITHM_VERSION,
+    )
+    existing = (
+        row["provenance_status"],
+        row["origin_session_id"],
+        row["origin_event_id"],
+        row["parent_session_id"],
+        row["evidence_type"],
+        row["confidence"],
+        row["provenance_algorithm_version"],
+    )
+    if existing == values:
+        return
+    connection.execute(
+        """
+        UPDATE event_observations
+        SET provenance_status = ?, origin_session_id = ?, origin_event_id = ?,
+            parent_session_id = ?, evidence_type = ?, confidence = ?,
+            provenance_algorithm_version = ?, updated_at = ?
+        WHERE id = ?
+        """,
+        (*values, _utc_now(), int(row["id"])),
+    )
+
+
+def _relationship_id(
+    connection: sqlite3.Connection,
+    relationship: NormalizedThreadRelationship,
+) -> int | None:
+    row = connection.execute(
+        """
+        SELECT id FROM thread_relationships
+        WHERE source_type = ? AND source_home = ? AND relationship_type = ?
+          AND parent_source_session_id = ? AND child_source_session_id = ?
+        """,
+        (
+            relationship.source_type,
+            str(relationship.source_home),
+            relationship.relationship_type,
+            relationship.parent_source_session_id,
+            relationship.child_source_session_id,
+        ),
+    ).fetchone()
+    return int(row["id"]) if row is not None else None
+
+
+def _replace_event_replay_summary(
+    connection: sqlite3.Connection,
+    relationship_id: int,
+    families: tuple[EventFamilyAssessment, ...],
+) -> None:
+    current = {item.family.value for item in families}
+    if current:
+        placeholders = ", ".join("?" for _ in current)
+        connection.execute(
+            f"DELETE FROM event_replay_summary WHERE relationship_id = ? "
+            f"AND event_family NOT IN ({placeholders})",
+            (relationship_id, *sorted(current)),
+        )
+    else:
+        connection.execute(
+            "DELETE FROM event_replay_summary WHERE relationship_id = ?",
+            (relationship_id,),
+        )
+    for item in families:
+        values = (
+            item.observed_child_events,
+            item.originated_events,
+            item.inherited_events,
+            item.ambiguous_events,
+            item.unknown_events,
+            item.status.value,
+            item.evidence_type,
+            PROVENANCE_ALGORITHM_VERSION,
+        )
+        existing = connection.execute(
+            """
+            SELECT observed_child_events, originated_events, inherited_events,
+                   ambiguous_events, unknown_events, provenance_status,
+                   evidence_type, algorithm_version
+            FROM event_replay_summary
+            WHERE relationship_id = ? AND event_family = ?
+            """,
+            (relationship_id, item.family.value),
+        ).fetchone()
+        if existing is not None and tuple(existing) == values:
+            continue
+        connection.execute(
+            """
+            INSERT INTO event_replay_summary(
+                relationship_id, event_family, observed_child_events,
+                originated_events, inherited_events, ambiguous_events,
+                unknown_events, provenance_status, evidence_type,
+                algorithm_version, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(relationship_id, event_family) DO UPDATE SET
+                observed_child_events = excluded.observed_child_events,
+                originated_events = excluded.originated_events,
+                inherited_events = excluded.inherited_events,
+                ambiguous_events = excluded.ambiguous_events,
+                unknown_events = excluded.unknown_events,
+                provenance_status = excluded.provenance_status,
+                evidence_type = excluded.evidence_type,
+                algorithm_version = excluded.algorithm_version,
+                updated_at = excluded.updated_at
+            """,
+            (relationship_id, item.family.value, *values, _utc_now()),
+        )
 
 
 def _start_run(
@@ -736,6 +1144,48 @@ def _replace_event_summary(
         VALUES (?, ?, ?, ?)
         """,
         ((session_id, item.category.value, item.count, now) for item in session.event_counts),
+    )
+
+
+def _replace_event_observations(
+    connection: sqlite3.Connection,
+    session_id: int,
+    parsed: ParsedSourceSession,
+) -> None:
+    connection.execute(
+        "DELETE FROM event_observations WHERE observed_session_id = ?",
+        (session_id,),
+    )
+    now = _utc_now()
+    connection.executemany(
+        """
+        INSERT INTO event_observations(
+            observed_session_id, source_ordinal, family_ordinal, event_family,
+            source_record_type, source_payload_type, fingerprint, stable_id_digest,
+            occurred_at, approximate_content_length, provenance_status,
+            origin_session_id, origin_event_id, parent_session_id, evidence_type,
+            confidence, fingerprint_version, provenance_algorithm_version, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'unknown', NULL, NULL, NULL,
+                  'awaiting_lineage_reconciliation', 'none', ?, ?, ?)
+        """,
+        (
+            (
+                session_id,
+                event.source_ordinal,
+                event.family_ordinal,
+                event.family.value,
+                event.source_record_type,
+                event.source_payload_type,
+                event.fingerprint,
+                event.stable_id_digest,
+                _format_datetime(event.occurred_at),
+                event.approximate_content_length,
+                event.fingerprint_version,
+                PROVENANCE_ALGORITHM_VERSION,
+                now,
+            )
+            for event in parsed.event_observations
+        ),
     )
 
 

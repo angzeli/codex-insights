@@ -26,6 +26,7 @@ codex-insights models
 codex-insights stats
 codex-insights usage --since 7d
 codex-insights usage --since 7d --by repo
+codex-insights provenance
 ```
 
 Codex home resolution uses this precedence:
@@ -180,6 +181,12 @@ when no time filter is supplied.
 usage, reconciled aggregate, child-thread coverage, and ambiguous contribution. Child-exclusive
 usage is attributed to the child's own start date, repository, and model. Local telemetry is not a
 guarantee of billing or quota semantics and is not tuned to match a Codex UI value.
+
+`provenance` applies the same observed-versus-originated distinction to selected non-token event
+families. It stores only versioned fingerprints, order, approximate lengths, and evidence—not
+message bodies, commands, patches, tool output, or reasoning. Exact ordered replay is attributed to
+the known ancestor; weak overlap remains explicit and is not deduplicated. See
+[docs/event-provenance.md](docs/event-provenance.md).
 
 This abridged example is generated from the repository's synthetic four-session fixture—not real
 history:

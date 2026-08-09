@@ -9,6 +9,9 @@ All notable changes to Codex Insights are documented here.
 - normalized explicit thread-spawn relationships and content-free token-lineage evidence;
 - `usage --reconciliation` diagnostics for observed, inherited/replayed, reconciled, ambiguous,
   and unavailable token accounting.
+- privacy-safe, versioned semantic event fingerprints and explicit observed-versus-originated
+  provenance across parent/child threads;
+- `provenance` aggregate diagnostics with session, event-family, and JSON filters.
 
 ### Changed
 

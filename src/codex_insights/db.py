@@ -7,7 +7,7 @@ from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 _MIGRATION_1 = """
 CREATE TABLE source_sessions (
@@ -272,7 +272,79 @@ LEFT JOIN thread_relationships AS tr ON tr.child_session_id = u.source_session_i
 LEFT JOIN token_lineage AS tl ON tl.child_session_id = u.source_session_id;
 """
 
-_MIGRATIONS = {1: _MIGRATION_1, 2: _MIGRATION_2, 3: _MIGRATION_3, 4: _MIGRATION_4}
+_MIGRATION_5 = """
+CREATE TABLE event_observations (
+    id INTEGER PRIMARY KEY,
+    observed_session_id INTEGER NOT NULL REFERENCES source_sessions(id) ON DELETE CASCADE,
+    source_ordinal INTEGER NOT NULL CHECK (source_ordinal >= 0),
+    family_ordinal INTEGER NOT NULL CHECK (family_ordinal >= 0),
+    event_family TEXT NOT NULL CHECK (
+        event_family IN (
+            'user_message', 'assistant_message', 'inter_agent_message',
+            'tool_call', 'tool_output', 'shell_command', 'validation_command',
+            'git_command', 'patch_edit', 'patch_result', 'task_lifecycle', 'error'
+        )
+    ),
+    source_record_type TEXT NOT NULL,
+    source_payload_type TEXT NOT NULL,
+    fingerprint TEXT NOT NULL,
+    stable_id_digest TEXT,
+    occurred_at TEXT,
+    approximate_content_length INTEGER CHECK (
+        approximate_content_length IS NULL OR approximate_content_length >= 0
+    ),
+    provenance_status TEXT NOT NULL CHECK (
+        provenance_status IN (
+            'origin', 'inherited_exact', 'inherited_prefix',
+            'observed_duplicate', 'ambiguous', 'unknown'
+        )
+    ),
+    origin_session_id INTEGER REFERENCES source_sessions(id) ON DELETE SET NULL,
+    origin_event_id INTEGER REFERENCES event_observations(id) ON DELETE SET NULL,
+    parent_session_id INTEGER REFERENCES source_sessions(id) ON DELETE SET NULL,
+    evidence_type TEXT NOT NULL,
+    confidence TEXT NOT NULL CHECK (confidence IN ('high', 'none')),
+    fingerprint_version TEXT NOT NULL,
+    provenance_algorithm_version TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE (observed_session_id, source_ordinal, fingerprint_version)
+);
+
+CREATE INDEX event_observations_session_idx
+    ON event_observations(observed_session_id, source_ordinal);
+CREATE INDEX event_observations_origin_idx
+    ON event_observations(origin_event_id);
+CREATE INDEX event_observations_family_idx
+    ON event_observations(event_family, provenance_status);
+
+CREATE TABLE event_replay_summary (
+    relationship_id INTEGER NOT NULL REFERENCES thread_relationships(id) ON DELETE CASCADE,
+    event_family TEXT NOT NULL,
+    observed_child_events INTEGER NOT NULL CHECK (observed_child_events >= 0),
+    originated_events INTEGER NOT NULL CHECK (originated_events >= 0),
+    inherited_events INTEGER NOT NULL CHECK (inherited_events >= 0),
+    ambiguous_events INTEGER NOT NULL CHECK (ambiguous_events >= 0),
+    unknown_events INTEGER NOT NULL CHECK (unknown_events >= 0),
+    provenance_status TEXT NOT NULL CHECK (
+        provenance_status IN (
+            'origin', 'inherited_exact', 'inherited_prefix',
+            'observed_duplicate', 'ambiguous', 'unknown'
+        )
+    ),
+    evidence_type TEXT NOT NULL,
+    algorithm_version TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (relationship_id, event_family)
+);
+"""
+
+_MIGRATIONS = {
+    1: _MIGRATION_1,
+    2: _MIGRATION_2,
+    3: _MIGRATION_3,
+    4: _MIGRATION_4,
+    5: _MIGRATION_5,
+}
 
 
 class UnsafeDatabasePathError(ValueError):

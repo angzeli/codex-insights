@@ -66,6 +66,34 @@ class EventCategory(StrEnum):
     UNKNOWN = "unknown"
 
 
+class EventFamily(StrEnum):
+    """Semantic rollout families retained for provenance, without raw payloads."""
+
+    USER_MESSAGE = "user_message"
+    ASSISTANT_MESSAGE = "assistant_message"
+    INTER_AGENT_MESSAGE = "inter_agent_message"
+    TOOL_CALL = "tool_call"
+    TOOL_OUTPUT = "tool_output"
+    SHELL_COMMAND = "shell_command"
+    VALIDATION_COMMAND = "validation_command"
+    GIT_COMMAND = "git_command"
+    PATCH_EDIT = "patch_edit"
+    PATCH_RESULT = "patch_result"
+    TASK_LIFECYCLE = "task_lifecycle"
+    ERROR = "error"
+
+
+class EventProvenanceStatus(StrEnum):
+    """Whether an observed semantic event can be attributed to a thread."""
+
+    ORIGIN = "origin"
+    INHERITED_EXACT = "inherited_exact"
+    INHERITED_PREFIX = "inherited_prefix"
+    OBSERVED_DUPLICATE = "observed_duplicate"
+    AMBIGUOUS = "ambiguous"
+    UNKNOWN = "unknown"
+
+
 @dataclass(frozen=True, slots=True)
 class ToolUsage:
     """Aggregate tool usage without captured stdout, stderr, or arguments."""
@@ -160,6 +188,32 @@ class NormalizedEventCount:
 
 
 @dataclass(frozen=True, slots=True)
+class NormalizedEventObservation:
+    """Content-free identity for one selected semantic record in a rollout."""
+
+    source_ordinal: int
+    family_ordinal: int
+    family: EventFamily
+    fingerprint: str
+    source_record_type: str
+    source_payload_type: str
+    occurred_at: datetime | None = None
+    stable_id_digest: str | None = None
+    approximate_content_length: int | None = None
+    fingerprint_version: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class NormalizedPromptCandidate:
+    """Transient user-message content; persisted only after privacy filtering."""
+
+    source_ordinal: int
+    fingerprint: str
+    occurred_at: datetime | None
+    text: str
+
+
+@dataclass(frozen=True, slots=True)
 class NormalizedSourceSession:
     """Stable source-session representation consumed by the indexer and database."""
 
@@ -209,3 +263,5 @@ class ParsedSourceSession:
     oversized_line_count: int = 0
     parsed_byte_count: int = 0
     token_snapshots: tuple[NormalizedTokenSnapshot, ...] = field(default_factory=tuple)
+    event_observations: tuple[NormalizedEventObservation, ...] = field(default_factory=tuple)
+    prompt_candidates: tuple[NormalizedPromptCandidate, ...] = field(default_factory=tuple)
