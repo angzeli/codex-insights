@@ -13,6 +13,9 @@ The default path is platform-aware:
 Every database-using CLI command accepts `--db PATH`. Paths equal to or nested under the resolved
 Codex home are rejected before SQLite is opened.
 
+The current derived schema version is 12. Migrations are forward-only and apply exclusively to the
+Codex Insights database.
+
 ## Entity relationships
 
 ```mermaid
@@ -117,6 +120,59 @@ erDiagram
         integer observed_session_id FK
         text provenance_status
     }
+    PROMPT_FEATURES {
+        integer prompt_id PK,FK
+        integer character_length
+        integer line_count
+        boolean requests_validation
+        boolean requests_commit
+        integer approximate_requirement_count
+        text feature_version
+    }
+    TOOL_ACTIVITY {
+        integer id PK
+        integer observed_session_id FK
+        integer origin_session_id FK
+        text tool_name
+        text command_category
+        text command_fingerprint
+        text result_status
+        text provenance_status
+    }
+    REPOSITORIES {
+        integer id PK
+        text identity_key
+        text display_name
+        text identity_method
+        text normalized_remote
+        text canonical_root
+    }
+    GIT_COMMITS {
+        integer id PK
+        integer repository_id FK
+        text commit_hash
+        text committed_at
+    }
+    SESSION_COMMIT_ASSOCIATIONS {
+        integer session_id PK,FK
+        integer commit_id PK,FK
+        text confidence
+        text evidence_type
+        boolean ambiguous
+    }
+    SESSION_OUTCOMES {
+        integer session_id PK,FK
+        text outcome
+        text confidence
+        text classifier_version
+    }
+    SESSION_TASKS {
+        integer session_id PK,FK
+        text action
+        text domain
+        text confidence
+        text taxonomy_version
+    }
 
     SOURCE_SESSIONS ||--|| USAGE : has
     SOURCE_SESSIONS ||--o{ EVENT_SUMMARY : summarizes
@@ -129,7 +185,16 @@ erDiagram
     SOURCE_SESSIONS ||--o{ PROMPTS : originates
     EVENT_OBSERVATIONS ||--o| PROMPTS : supplies
     PROMPTS ||--o{ PROMPT_OBSERVATIONS : observed_as
+    PROMPTS ||--o| PROMPT_FEATURES : describes
     EVENT_OBSERVATIONS ||--o| PROMPT_OBSERVATIONS : records
+    EVENT_OBSERVATIONS ||--o{ TOOL_ACTIVITY : normalizes
+    SOURCE_SESSIONS ||--o{ TOOL_ACTIVITY : originates
+    REPOSITORIES ||--o{ SOURCE_SESSIONS : attributes
+    REPOSITORIES ||--o{ GIT_COMMITS : contains
+    SOURCE_SESSIONS ||--o{ SESSION_COMMIT_ASSOCIATIONS : associated
+    GIT_COMMITS ||--o{ SESSION_COMMIT_ASSOCIATIONS : associated
+    SOURCE_SESSIONS ||--o| SESSION_OUTCOMES : classified
+    SOURCE_SESSIONS ||--o| SESSION_TASKS : classified
 ```
 
 ## Table contracts
@@ -176,6 +241,25 @@ FTS5 table indexes only `prompts.text`; triggers keep it synchronized. Prompt ID
 identity, source ordinal, event fingerprint, and content-schema version rather than autoincrement,
 timestamp, or text alone. See `docs/privacy.md`.
 
+`prompt_features` stores versioned descriptors computed from the redacted, bounded logical prompt:
+length/structure, explicit acceptance or validation requests, path/commit/non-goal/read-only signals,
+and an approximate requirement count. It contains no quality score and no additional prompt copy.
+
+`tool_activity` stores normalized tool/command metadata for physical observations plus their explicit
+origin mapping. Command text is bounded and privacy-filtered; call IDs are digested; result rows retain
+only status, exit code, duration, and exact commit-hash evidence where applicable. Raw stdout/stderr,
+patch bodies, and arbitrary tool results are not stored.
+
+`repositories` provides stable local identities in priority order: normalized credential-free remote,
+common Git directory, then canonical repository path. `git_commits` stores read-only discovered commit
+metadata. `session_commit_associations` preserves HIGH/MEDIUM/LOW confidence, evidence type, ambiguity,
+and algorithm version; the source catalogue's initial `git_sha` is never treated as a created commit.
+
+`session_outcomes` stores deterministic classifications from originated validation, edit, error,
+commit, and lifecycle evidence. `session_tasks` stores deterministic action/domain/facet
+classifications from origin-thread intent and originated fallback evidence. Both retain UNKNOWN,
+confidence, matched evidence, and classifier/taxonomy versions.
+
 `ingestion_state` records inexpensive file identity metadata, parser/schema versions, status, and
 the last safe byte offset. Size and nanosecond mtime are the initial incremental-change signal;
 content hashes are intentionally omitted until evidence shows they are needed.
@@ -208,6 +292,10 @@ upserts deterministic prompt IDs, removes only derived prompt rows no longer pre
 session, and then synchronizes replay observations from the provenance table. An unchanged run does
 not rewrite prompt or FTS rows. Missing source rollouts retain the previously indexed derived rows,
 matching the session index's existing retention semantics.
+
+Prompt features, repository identities, Git associations, outcomes, and tasks are reconciled after
+session/event upserts. Each reconciler compares normalized values before writing, so an unchanged
+second index preserves derived rows and timestamps. Git repository inspection is read-only.
 
 After session upserts, the adapter discovers explicit thread relationships. Lineage is recomputed
 only for new relationships, changed endpoints, an algorithm-version change, or missing lineage.

@@ -5,11 +5,12 @@ sessions. Its goal is to make patterns such as project activity, token use, mode
 tool frequency, Git correlation, outcomes, and efficiency trends understandable without
 uploading a user's private working history.
 
-## Project status: v0.1.0 MVP with Phase-II provenance and prompt search
+## Project status: v0.1.0 MVP with Phase-II local analytics
 
 The local-first command-line MVP is ready for daily use. It can audit an installed Codex layout,
 incrementally index normalized session metadata, explore individual sessions, report token usage,
-audit cross-thread replay, and search redacted origin-aware user prompts.
+audit cross-thread replay, search redacted origin-aware user prompts, analyze originated commands,
+correlate Git commits, classify outcomes/tasks, and generate offline weekly or monthly reports.
 
 ```text
 codex-insights --help
@@ -30,6 +31,13 @@ codex-insights provenance
 codex-insights prompts --since 7d
 codex-insights search '"quoted phrase"'
 codex-insights prompt PROMPT_ID
+codex-insights tools --since 7d
+codex-insights commands --repeated
+codex-insights commits --confidence high
+codex-insights outcomes --since 30d
+codex-insights tasks --by type
+codex-insights report weekly --format markdown
+codex-insights report monthly --format html --output ~/codex-month.html
 ```
 
 Codex home resolution uses this precedence:
@@ -112,9 +120,9 @@ codex-insights audit-source --verbose
 `index` loads structural catalogue metadata from a discovered state database, then streams only
 the referenced rollout files that are new or changed. It stores normalized session metadata,
 cumulative token totals (or explicitly labelled summed deltas), aggregate event counts, compact
-provenance fingerprints, and redacted user-authored prompt text for local search. It does not retain
-assistant/hidden reasoning, command arguments, patches, tool output, stdout/stderr, environment
-dumps, or raw JSONL records.
+provenance fingerprints, redacted user-authored prompt text for local search, and bounded,
+privacy-filtered command metadata. It does not retain assistant/hidden reasoning, raw command
+results, patches, tool output, stdout/stderr, environment dumps, or raw JSONL records.
 
 ```bash
 # Uses the platform-aware database default documented below.
@@ -210,6 +218,50 @@ codex-insights prompt prm_IDENTIFIER_PREFIX
 Search uses SQLite FTS5 rather than a silent substring fallback. Prompt output is sensitive even
 after redaction; see [docs/privacy.md](docs/privacy.md) for the exact content, lineage, redaction,
 and long-prompt policy.
+
+## Phase-II analytics and reports
+
+Tool, Git, outcome, and task analytics use the same explicit observed-versus-originated provenance
+model as prompts and tokens:
+
+```bash
+codex-insights tools --since 7d
+codex-insights commands --since 7d --repeated
+codex-insights commits --confidence high
+codex-insights outcomes --since 30d
+codex-insights tasks --by type
+codex-insights tasks --by domain --repo codex-insights
+```
+
+Commands are bounded and privacy-filtered before storage; raw stdout/stderr is not retained. Commit
+correlation uses read-only Git inspection and reports HIGH, MEDIUM, and LOW evidence separately.
+Outcomes and tasks are deterministic, explainable classifications, with `unknown` preferred over
+unsupported certainty. Prompt features are descriptive and versioned; no prompt-quality score or LLM
+classifier is used.
+
+Periodic reports reuse these analytics and write a file only when `--output` is explicit:
+
+```bash
+codex-insights report weekly --date 2026-08-09 --timezone UTC
+codex-insights report monthly --format json --output ~/codex-month.json
+codex-insights report weekly --format html --output ~/codex-week.html
+```
+
+This abridged report fragment also comes from synthetic fixtures:
+
+```text
+# Codex Insights Weekly Report
+
+Period: 2026-08-03 to 2026-08-09 (UTC)
+Sessions: 3
+Reconciled known tokens: 50
+Token coverage: 1/3 sessions
+UNKNOWN outcomes: 3
+```
+
+See [docs/metrics.md](docs/metrics.md), [docs/git-correlation.md](docs/git-correlation.md),
+[docs/outcomes.md](docs/outcomes.md), [docs/task-taxonomy.md](docs/task-taxonomy.md), and
+[docs/reports.md](docs/reports.md) for the exact evidence, attribution, and coverage semantics.
 
 This abridged example is generated from the repository's synthetic four-session fixture—not real
 history:
@@ -315,13 +367,13 @@ The normalized tables and migration policy are documented in
 
 ## Intentionally not implemented
 
-- Git commit correlation;
-- session outcome classification;
 - a dashboard or web server;
-- LLM-based transcript analysis.
+- LLM or semantic transcript analysis;
+- prompt-style quality scoring or causal efficiency claims;
+- reproduction of OpenAI server-side billing or quota accounting.
 
-These features require separate evidence and product-design work. Codex Insights does not store the
-assistant/tool transcript content they would need.
+These features require separate evidence and product-design work. Codex Insights does not retain the
+raw assistant/tool transcript content that such analysis would require.
 
 ## License
 

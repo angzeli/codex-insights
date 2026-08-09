@@ -64,8 +64,8 @@ not erased merely because both replay the same parent prefix.
 ## Persisted scope and future use
 
 The compact `event_observations` and `event_replay_summary` tables are the shared provenance
-substrate used by prompt search and reserved for later command analytics, Git evidence, and
-outcomes. Future features must query origin mappings rather than reimplementing replay detection.
+substrate used by prompt search, command analytics, Git evidence, outcomes, and task/report
+aggregation. New features must query origin mappings rather than reimplementing replay detection.
 A normalization change requires a new fingerprint or provenance algorithm version and a controlled
 re-index.
 

@@ -61,6 +61,12 @@ replace `CodexLocalAdapter` without changing analytics or presentation code.
 - `analytics/prompts.py`: origin-aware prompt listing, detail, filters, and FTS5 queries.
 - `privacy.py`: bounded prompt redaction and content-schema policy.
 - `prompt_cli.py`: sensitive prompt/search presentation and explicit long-content handling.
+- `command_normalization.py`: bounded command redaction and deterministic activity categories.
+- `git_correlation.py`: read-only, confidence-tiered session/commit evidence reconciliation.
+- `outcomes.py` and `taxonomy.py`: deterministic originated-evidence classifications.
+- `prompt_features.py`: descriptive, versioned prompt patterns without a quality score.
+- `analytics/reports.py`: one periodic report model composed from shared analytics functions.
+- `reporting.py`: Markdown, stable JSON, and escaped self-contained HTML presentation.
 
 ## Index lifecycle
 
@@ -92,14 +98,15 @@ explicit thread relationships and ordering evidence. The derived index preserves
 observations and conservative origin mappings; later features consume this API instead of assuming
 that every record in a child rollout was created by that child.
 
-## Planned capability stages
+## Capability stages
 
 1. Bounded inventory and explicit source-version detection.
 2. Minimal session metadata normalization and incremental indexing.
 3. Aggregate project, model, and token analytics.
 4. Cross-thread event provenance and privacy-aware user-prompt search.
-5. Tool analytics and Git commit correlation using origin-aware evidence.
-6. Conservative outcome and rework heuristics with explainable evidence.
-7. CLI reports, export controls, and an optional local dashboard.
+5. Tool analytics and Git commit correlation using origin-aware evidence (implemented).
+6. Conservative outcome/task heuristics with explainable evidence (implemented).
+7. Weekly/monthly CLI reports and export controls (implemented); an optional local dashboard remains
+   a future stage.
 
 Each stage must preserve the data-safety invariants in `docs/data-safety.md`.

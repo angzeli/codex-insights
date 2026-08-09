@@ -108,6 +108,20 @@ The history audit reports approximate line count, sampled valid and malformed re
 field names, timestamp range when parseable, and sampled session-ID coverage. Prompt or text values
 are represented only by redacted field-shape observations.
 
+### Tool-call encodings used by the current adapter
+
+A separate bounded metadata audit observed both direct `function_call` records and newer
+`custom_tool_call` records whose outer tool is `exec`. The latter can contain multiple nested
+`tools.<name>(...)` operations, including shell execution, patching, polling, plans, image/web calls,
+and collaboration operations. Stable call identifiers often connect calls to function/custom-tool
+outputs; structured results may expose exit code, wall time, or patch success.
+
+The adapter normalizes a recognized nested operation rather than counting the outer `exec` wrapper.
+Arguments and outputs are parsed transiently. Only bounded/redacted command metadata, normalized
+category, digested call identity, status/exit/duration, and exact commit-hash evidence are eligible
+for persistence. Unknown or malformed wrappers remain explicit and do not crash indexing. These
+observations are version-specific, not a contract for future Codex releases.
+
 ## Assumptions
 
 - JSONL files beneath `sessions/` and `archived_sessions/` are rollout candidates.
@@ -143,13 +157,13 @@ The indexer translates recognized source records into stable internal concepts s
 - repository, working directory, and Git correlation;
 - model usage;
 - input, output, cached, and total token metrics with provenance;
-- aggregate tool names and invocation counts without raw arguments or output;
+- origin-aware tool and command metadata without raw output;
 - archived state;
 - cautiously inferred outcome and rework signals;
 - adapter version, source location, and source-format confidence.
 
-The normalized index will be derived, rebuildable state stored outside Codex home. This audit does
-not create that index and does not copy raw records.
+The normalized index is derived, rebuildable state stored outside Codex home. The audit command
+itself does not create that index and does not copy raw records.
 
 ## Indexer v1 recognition and limits
 
