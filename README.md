@@ -5,11 +5,11 @@ sessions. Its goal is to make patterns such as project activity, token use, mode
 tool frequency, Git correlation, outcomes, and efficiency trends understandable without
 uploading a user's private working history.
 
-## Project status: v0.1.0 MVP
+## Project status: v0.1.0 MVP with Phase-II provenance and prompt search
 
 The local-first command-line MVP is ready for daily use. It can audit an installed Codex layout,
-incrementally index normalized session metadata, explore individual sessions, and report token
-usage by repository, model, day, or week with explicit data coverage.
+incrementally index normalized session metadata, explore individual sessions, report token usage,
+audit cross-thread replay, and search redacted origin-aware user prompts.
 
 ```text
 codex-insights --help
@@ -27,6 +27,9 @@ codex-insights stats
 codex-insights usage --since 7d
 codex-insights usage --since 7d --by repo
 codex-insights provenance
+codex-insights prompts --since 7d
+codex-insights search '"quoted phrase"'
+codex-insights prompt PROMPT_ID
 ```
 
 Codex home resolution uses this precedence:
@@ -108,9 +111,10 @@ codex-insights audit-source --verbose
 
 `index` loads structural catalogue metadata from a discovered state database, then streams only
 the referenced rollout files that are new or changed. It stores normalized session metadata,
-cumulative token totals (or explicitly labelled summed deltas), and aggregate event counts. It
-does not retain prompts, message bodies, hidden reasoning, command arguments, patches, tool output,
-stdout/stderr, environment dumps, or raw JSONL records.
+cumulative token totals (or explicitly labelled summed deltas), aggregate event counts, compact
+provenance fingerprints, and redacted user-authored prompt text for local search. It does not retain
+assistant/hidden reasoning, command arguments, patches, tool output, stdout/stderr, environment
+dumps, or raw JSONL records.
 
 ```bash
 # Uses the platform-aware database default documented below.
@@ -187,6 +191,25 @@ families. It stores only versioned fingerprints, order, approximate lengths, and
 message bodies, commands, patches, tool output, or reasoning. Exact ordered replay is attributed to
 the known ancestor; weak overlap remains explicit and is not deduplicated. See
 [docs/event-provenance.md](docs/event-provenance.md).
+
+## Search user prompts
+
+Prompt history is local, origin-aware, and privacy-filtered. Replay copies in descendant rollouts
+are observations of the originating prompt rather than separate search hits. System/developer
+instructions, subagent instructions, assistant content, reasoning, commands, and tool output are
+excluded. Obvious credential forms are redacted before storage, and prompts are capped at 100,000
+stored characters.
+
+```bash
+codex-insights prompts --since 7d --repo my-project
+codex-insights search "migration" --model model-name
+codex-insights search '"quoted phrase"' --session SESSION_PREFIX --json
+codex-insights prompt prm_IDENTIFIER_PREFIX
+```
+
+Search uses SQLite FTS5 rather than a silent substring fallback. Prompt output is sensitive even
+after redaction; see [docs/privacy.md](docs/privacy.md) for the exact content, lineage, redaction,
+and long-prompt policy.
 
 This abridged example is generated from the repository's synthetic four-session fixture—not real
 history:
@@ -290,16 +313,15 @@ More detail is in [docs/architecture.md](docs/architecture.md).
 The normalized tables and migration policy are documented in
 [docs/database-schema.md](docs/database-schema.md).
 
-## Intentionally not implemented in v0.1.0
+## Intentionally not implemented
 
-- prompt text search;
 - Git commit correlation;
 - session outcome classification;
 - a dashboard or web server;
 - LLM-based transcript analysis.
 
-These features require separate privacy, evidence, and product-design work. The MVP does not store
-the raw content they would need.
+These features require separate evidence and product-design work. Codex Insights does not store the
+assistant/tool transcript content they would need.
 
 ## License
 

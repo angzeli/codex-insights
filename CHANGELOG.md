@@ -12,6 +12,10 @@ All notable changes to Codex Insights are documented here.
 - privacy-safe, versioned semantic event fingerprints and explicit observed-versus-originated
   provenance across parent/child threads;
 - `provenance` aggregate diagnostics with session, event-family, and JSON filters.
+- lineage-aware logical prompt indexing with stable IDs, replay observations, bounded secret
+  redaction, and long-content truncation;
+- `prompts`, `prompt`, and SQLite FTS5-backed `search` commands with repository, model, session,
+  and time filters.
 
 ### Changed
 
