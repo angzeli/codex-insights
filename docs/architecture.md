@@ -48,6 +48,7 @@ replace `CodexLocalAdapter` without changing analytics or presentation code.
 - `config.py`: path precedence and analyzer defaults.
 - `discovery.py`: bounded metadata-only environment checks.
 - `models.py`: normalized, source-independent records.
+- `lineage.py`: exact-vector thread topology and token-lineage evidence rules.
 - `adapters/`: contracts and format-specific read-only source access.
 - `db.py`: source read-only connections and the separate derived index.
 - `indexer.py`: source-independent incrementality, transactional upserts, and run accounting.
@@ -74,10 +75,11 @@ resolution, deterministic ordering, aggregation, time-boundary semantics, and mi
 handling. It does not import the Codex-local adapter. `history_cli.py` converts those typed results
 to compact Rich tables or JSON and avoids absolute paths in ordinary session lists.
 
-Usage analytics follows the same boundary. It consumes one normalized usage row per session,
-preserves null fields as missing data, attributes repositories only through normalized repository
-identity, and applies timezone conversion after reading UTC timestamps. Presentation code receives
-typed results and never opens rollout files or Codex-owned databases.
+Usage analytics follows the same boundary. It consumes observed usage plus normalized explicit
+thread relationships, preserves null fields as missing data, and uses lineage-adjusted incremental
+contributions only when exact vector evidence supports them. Repository/model and time attribution
+stay with the contributing child session. Presentation code receives typed results and never opens
+rollout files or Codex-owned databases.
 
 ## Planned capability stages
 

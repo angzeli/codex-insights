@@ -177,6 +177,18 @@ Recognized source values are mapped inside the adapter:
   become aggregate event categories;
 - all other payload values are discarded after the streaming record is classified.
 
+Some audited state databases also expose an explicit relationship table with parent-thread ID,
+child-thread ID, and status fields. The adapter normalizes that relationship by column role rather
+than depending on the literal table name. It does not infer parenthood from `model`, agent labels,
+or path naming.
+
+The cumulative total is authoritative only for the rollout that reports it. A bounded audit found
+that some explicitly related child rollouts replay an exact, multi-event cumulative vector prefix
+from their parent. For aggregate accounting, Codex Insights subtracts only an exact parent-final
+baseline or an exact multi-vector parent segment. A partial or merely similar total is ambiguous
+and is not subtracted. `last_token_usage` is supporting evidence; a mismatch does not override an
+exact cumulative prefix because local delta telemetry can be incomplete or reset.
+
 The first parse streams the entire referenced rollout because complete per-session totals require
 the final cumulative token record. Subsequent runs skip a rollout when file size, nanosecond mtime,
 parser version, and recognized source-schema version are unchanged. A changed file is conservatively
@@ -188,7 +200,7 @@ out-of-home rollout is retained as metadata-only session provenance and reported
 never followed outside the configured Codex home. Catalogue-free orphan rollouts are not guessed
 into synthetic session identities in this version.
 
-The cumulative-versus-delta interpretation is based on the audited field names and observed event
+The cumulative-versus-delta and cross-thread interpretations are based on audited field names and observed event
 placement in the current undocumented format. It is an adapter rule, not a Codex API guarantee.
 The parser version changes when this interpretation changes so existing rollouts are conservatively
 reparsed into the separate analyzer index.

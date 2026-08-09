@@ -2,6 +2,20 @@
 
 All notable changes to Codex Insights are documented here.
 
+## Unreleased
+
+### Added
+
+- normalized explicit thread-spawn relationships and content-free token-lineage evidence;
+- `usage --reconciliation` diagnostics for observed, inherited/replayed, reconciled, ambiguous,
+  and unavailable token accounting.
+
+### Changed
+
+- additive totals in `stats`, `repos`, `models`, and `usage` now subtract exact inherited/replayed
+  baselines while retaining ambiguous child totals;
+- per-session displays and token distributions remain observed rollout values.
+
 ## 0.1.0 - 2026-08-09
 
 ### Added

@@ -17,6 +17,7 @@ from codex_insights.analytics import (
     UsageBreakdown,
     UsageGroup,
     UsageMetrics,
+    UsageReconciliation,
     get_usage_report,
     parse_time_range,
     resolve_timezone,
@@ -89,6 +90,13 @@ def usage_command(
         bool,
         typer.Option("--json", help="Emit machine-readable JSON."),
     ] = False,
+    reconciliation: Annotated[
+        bool,
+        typer.Option(
+            "--reconciliation",
+            help="Show observed, inherited/replayed, reconciled, and ambiguous totals.",
+        ),
+    ] = False,
 ) -> None:
     """Report token usage, rates, percentiles, and source-data coverage."""
 
@@ -112,6 +120,7 @@ def usage_command(
             ),
             timezone=zone,
             top=top,
+            include_reconciliation=reconciliation,
         )
     except TimeExpressionError as exc:
         raise typer.BadParameter(str(exc), param_hint="--since/--until") from exc
@@ -125,7 +134,13 @@ def usage_command(
     if json_output:
         typer.echo(json.dumps(report.to_dict(), indent=2, sort_keys=True))
         return
-    _render_usage(report.metrics, report.groups, report.timezone, report.breakdown)
+    _render_usage(
+        report.metrics,
+        report.groups,
+        report.timezone,
+        report.breakdown,
+        report.reconciliation,
+    )
 
 
 def _render_usage(
@@ -133,6 +148,7 @@ def _render_usage(
     groups: tuple[UsageGroup, ...],
     timezone: str,
     breakdown: UsageBreakdown,
+    reconciliation: UsageReconciliation | None,
 ) -> None:
     coverage = metrics.coverage.total_tokens
     fraction = coverage / metrics.session_count if metrics.session_count else None
@@ -141,7 +157,7 @@ def _render_usage(
         headline = f"Known token totals unavailable across {covered_sessions} sessions"
     else:
         headline = (
-            f"{_format_compact(metrics.total_tokens)} known tokens across "
+            f"{_format_compact(metrics.total_tokens)} reconciled tokens across "
             f"{coverage}/{metrics.session_count} sessions with token records"
         )
     if fraction is not None:
@@ -154,7 +170,7 @@ def _render_usage(
     summary.add_column("Value", justify="right")
     summary.add_column("Coverage", justify="right")
     for label, value, field_coverage in (
-        ("Total tokens", metrics.total_tokens, metrics.coverage.total_tokens),
+        ("Reconciled total", metrics.total_tokens, metrics.coverage.total_tokens),
         ("Input tokens", metrics.input_tokens, metrics.coverage.input_tokens),
         ("Cached input", metrics.cached_input_tokens, metrics.coverage.cached_input_tokens),
         ("Output tokens", metrics.output_tokens, metrics.coverage.output_tokens),
@@ -169,15 +185,32 @@ def _render_usage(
             _format_compact(value),
             f"{field_coverage}/{metrics.session_count}",
         )
-    summary.add_row("Mean tokens/session", _format_number(metrics.mean_tokens_per_session), "known")
+    if metrics.observed_total_tokens != metrics.total_tokens:
+        summary.add_row(
+            "Observed rollout total",
+            _format_compact(metrics.observed_total_tokens),
+            f"{metrics.coverage.total_tokens}/{metrics.session_count}",
+        )
     summary.add_row(
-        "Median tokens/session",
+        "Observed mean tokens/session",
+        _format_number(metrics.mean_tokens_per_session),
+        "known",
+    )
+    summary.add_row(
+        "Observed median tokens/session",
         _format_number(metrics.median_tokens_per_session),
         "known",
     )
-    summary.add_row("P90 tokens/session", _format_number(metrics.p90_tokens_per_session), "known")
+    summary.add_row(
+        "Observed P90 tokens/session",
+        _format_number(metrics.p90_tokens_per_session),
+        "known",
+    )
     summary.add_row("Sessions/day", _format_rate(metrics.sessions_per_day), "all")
     console.print(summary)
+
+    if reconciliation is not None:
+        _render_reconciliation(reconciliation)
 
     if breakdown is UsageBreakdown.SUMMARY:
         return
@@ -189,7 +222,9 @@ def _render_usage(
     if breakdown is UsageBreakdown.MODEL:
         table.add_column("Provider", max_width=14, overflow="ellipsis")
     table.add_column("Sessions", justify="right")
-    table.add_column("Known tokens", justify="right")
+    if reconciliation is not None:
+        table.add_column("Observed tokens", justify="right")
+    table.add_column("Reconciled tokens", justify="right")
     table.add_column("Token data", justify="right")
     table.add_column("Mean/session", justify="right")
     table.add_column("P90", justify="right")
@@ -204,9 +239,41 @@ def _render_usage(
             _format_number(group.metrics.p90_tokens_per_session),
             _format_rate(group.metrics.sessions_per_day),
         ]
+        if reconciliation is not None:
+            row.insert(2, _format_compact(group.metrics.observed_total_tokens))
         if breakdown is UsageBreakdown.MODEL:
             row.insert(1, group.model_provider or "unknown")
         table.add_row(*row)
+    console.print(table)
+
+
+def _render_reconciliation(reconciliation: UsageReconciliation) -> None:
+    table = Table(title="Token reconciliation", show_header=False, box=None, pad_edge=False)
+    table.add_column("Metric", style="bold", no_wrap=True)
+    table.add_column("Value", justify="right")
+    for label, value in (
+        ("Observed rollout sum", reconciliation.observed_rollout_tokens),
+        ("Inherited/replayed usage", reconciliation.inherited_replayed_tokens),
+        ("Reconciled aggregate", reconciliation.reconciled_tokens),
+        ("Ambiguous observed usage", reconciliation.ambiguous_observed_tokens),
+    ):
+        table.add_row(label, _format_integer(value))
+    for label, value in (
+        ("Root threads", reconciliation.root_threads),
+        ("Child threads", reconciliation.child_threads),
+        ("Confidently reconciled", reconciliation.confidently_reconciled_children),
+        ("Independent", reconciliation.independent_children),
+        ("Ambiguous", reconciliation.ambiguous_children),
+        ("Unavailable", reconciliation.unavailable_children),
+        ("Cyclic", reconciliation.cyclic_children),
+        ("Orphan relationships", reconciliation.orphan_relationships),
+    ):
+        table.add_row(label, f"{value:,}")
+    coverage = reconciliation.child_reconciliation_coverage
+    table.add_row(
+        "Child reconciliation coverage",
+        f"{coverage:.1%}" if coverage is not None else "n/a",
+    )
     console.print(table)
 
 
@@ -238,6 +305,10 @@ def _format_compact(value: int | None) -> str:
 
 def _format_number(value: float | None) -> str:
     return f"{value:,.1f}" if value is not None else "unknown"
+
+
+def _format_integer(value: int | None) -> str:
+    return f"{value:,}" if value is not None else "unknown"
 
 
 def _format_rate(value: float | None) -> str:

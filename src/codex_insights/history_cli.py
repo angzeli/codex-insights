@@ -192,7 +192,7 @@ def models_command(
     codex_home: CodexHomeOption = None,
     json_output: JsonOption = False,
 ) -> None:
-    """Aggregate indexed sessions and known tokens by model."""
+    """Aggregate indexed sessions and reconciled tokens by model."""
 
     try:
         rows = list_models(
@@ -345,7 +345,7 @@ def _render_repositories(rows: tuple[RepositorySummary, ...]) -> None:
     table.add_column("Sessions", justify="right")
     table.add_column("First", no_wrap=True)
     table.add_column("Latest", no_wrap=True)
-    table.add_column("Known tokens", justify="right")
+    table.add_column("Reconciled tokens", justify="right")
     table.add_column("Token data", justify="right")
     for row in rows:
         table.add_row(
@@ -369,7 +369,7 @@ def _render_models(rows: tuple[ModelSummary, ...]) -> None:
     table.add_column("Sessions", justify="right")
     table.add_column("First", no_wrap=True)
     table.add_column("Latest", no_wrap=True)
-    table.add_column("Known tokens", justify="right")
+    table.add_column("Reconciled tokens", justify="right")
     table.add_column("Token data", justify="right")
     for row in rows:
         table.add_row(
@@ -397,7 +397,7 @@ def _render_stats(stats: StatsSummary) -> None:
     table.add_row("Sessions last 7 days", f"{stats.sessions_last_7_days:,}")
     table.add_row("Sessions last 30 days", f"{stats.sessions_last_30_days:,}")
     table.add_row(
-        "Total known tokens",
+        "Reconciled known tokens",
         _format_count(stats.total_known_tokens, unknown="unknown"),
     )
     coverage = (

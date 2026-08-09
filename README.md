@@ -153,8 +153,10 @@ treated as zero. Sessions without a resolved Git root appear under `Outside Git 
 
 ## Analyze token usage
 
-`usage` reports known token totals and always shows how many matching sessions contain token
-records. Missing per-session or per-field values stay `unknown` in tables and `null` in JSON.
+`usage` reports reconciled additive token totals and always shows how many matching sessions
+contain token records. Exact inherited or replayed parent baselines are counted once; ambiguous
+child relationships retain their observed total and are reported explicitly. Missing per-session
+or per-field values stay `unknown` in tables and `null` in JSON.
 
 ```bash
 codex-insights usage
@@ -163,24 +165,31 @@ codex-insights usage --since 30d --by model --top 5
 codex-insights usage --by day --timezone Asia/Shanghai
 codex-insights usage --by week --timezone local
 codex-insights usage --repo my-project --model model-name --json
+codex-insights usage --reconciliation
 ```
 
 Repository groups come only from the normalized repository root/name recorded during indexing;
 arbitrary working-directory substrings are not treated as repository identities. Day and week
 buckets use `--timezone`, whose default is the machine's local timezone. Weeks start on Monday.
-Mean, median, and nearest-rank p90 tokens/session use only sessions with known total-token data.
+Mean, median, and nearest-rank p90 tokens/session describe observed per-rollout totals and use only
+sessions with known total-token data. Additive totals use reconciled per-session contributions.
 Sessions/day uses the selected calendar window, or the inclusive first-to-latest activity span
 when no time filter is supplied.
+
+`usage --reconciliation` shows the observed rollout sum, confidently identified inherited/replayed
+usage, reconciled aggregate, child-thread coverage, and ambiguous contribution. Child-exclusive
+usage is attributed to the child's own start date, repository, and model. Local telemetry is not a
+guarantee of billing or quota semantics and is not tuned to match a Codex UI value.
 
 This abridged example is generated from the repository's synthetic four-session fixture—not real
 history:
 
 ```text
 $ codex-insights usage --by repo --timezone UTC
-150 known tokens across 2/4 sessions with token records (50.0%)
+150 reconciled tokens across 2/4 sessions with token records (50.0%)
 Timezone: UTC
 
-Repository                Sessions  Known tokens  Token data  Mean/session    P90  Sessions/day
+Repository                Sessions  Reconciled tokens  Token data  Mean/session    P90  Sessions/day
 repo-one                         2           100         1/2         100.0  100.0          0.22
 Outside Git repositories        1            50         1/1          50.0   50.0          0.11
 repo-two                         1       unknown         0/1       unknown unknown          0.11

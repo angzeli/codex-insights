@@ -69,9 +69,27 @@ erDiagram
         text completed_at
         text status
     }
+    THREAD_RELATIONSHIPS {
+        integer id PK
+        integer parent_session_id FK
+        integer child_session_id FK
+        text relationship_type
+        text source_status
+    }
+    TOKEN_LINEAGE {
+        integer child_session_id PK,FK
+        integer parent_session_id FK
+        text deduplication_status
+        text confidence
+        integer baseline_total_tokens
+        integer incremental_total_tokens
+    }
 
     SOURCE_SESSIONS ||--|| USAGE : has
     SOURCE_SESSIONS ||--o{ EVENT_SUMMARY : summarizes
+    SOURCE_SESSIONS ||--o{ THREAD_RELATIONSHIPS : parent
+    SOURCE_SESSIONS ||--o| THREAD_RELATIONSHIPS : child
+    SOURCE_SESSIONS ||--o| TOKEN_LINEAGE : reconciles
 ```
 
 ## Table contracts
@@ -86,11 +104,21 @@ diagnosed without retaining raw rollout records.
 separate makes source filtering useful without confusing an unstable source value with adapter
 provenance.
 
-`usage` contains one aggregate row per session. `usage_semantics` distinguishes a source-reported
+`usage` contains one observed aggregate row per session. `usage_semantics` distinguishes a source-reported
 `cumulative_total` from `summed_event_deltas`; `unavailable` means no trustworthy token record was
 observed. Schema version 3 makes each token metric nullable so an absent field remains different
 from a source-reported zero. The schema also includes cache-write input tokens because the source
 audit observed that field.
+
+`thread_relationships` normalizes explicit source spawn edges. Source IDs are retained so orphan
+references can be audited; nullable internal IDs link valid endpoints to `source_sessions`.
+Parenthood is never inferred from model names.
+
+`token_lineage` stores only content-free accounting evidence for child threads: status,
+confidence, exact matched-snapshot count, inherited baseline vector, child-exclusive incremental
+vector, and whether `last_token_usage` corroborates the cumulative difference. It does not store
+messages, raw rollout lines, or tool output. `accounted_usage` is a view that preserves the
+observed `usage` vector while exposing a lineage-adjusted aggregate contribution.
 
 `event_summary` stores counts keyed by normalized categories. It does not store event payloads,
 message bodies, command arguments, patches, stdout, stderr, environment dumps, or hidden reasoning.
@@ -121,6 +149,10 @@ source-schema-version changes also force a reparse. Unchanged files retain their
 rows byte-for-byte unless catalogue metadata changed. Reparsed sessions replace their one usage
 row and category counts transactionally, so rerunning the index cannot create duplicates.
 
+After session upserts, the adapter discovers explicit thread relationships. Lineage is recomputed
+only for new relationships, changed endpoints, an algorithm-version change, or missing lineage.
+An unchanged second index leaves relationship and lineage rows byte-for-byte stable.
+
 The six reported outcomes are session-candidate outcomes. A new metadata-only catalogue row whose
 rollout is missing is stored for provenance but reported as `skipped`, not `new`; consequently the
 database can contain more session catalogue rows than the `new` count from a first run.
@@ -136,15 +168,29 @@ Rows whose usage semantics are `unavailable` return null token values through th
 Repository aggregation groups null repository roots into `Outside Git repositories`, while the
 repository count in `stats` counts only resolved Git roots.
 
+`session SESSION_ID` and session-list token columns continue to show the rollout's observed
+cumulative total. Additive totals in `stats`, `repos`, `models`, and `usage` use the contribution
+from `accounted_usage`.
+
 ## Usage analytics semantics
 
-`analytics/usage.py` reads one normalized usage row per session. It sums only non-null fields and
-reports field-level session coverage alongside every aggregate. Mean, median, and nearest-rank p90
-tokens/session are calculated only from non-null total-token values; missing sessions do not enter
-the distribution as zero.
+`analytics/usage.py` sums non-null lineage-adjusted contributions and reports field-level session
+coverage alongside every aggregate. Exact inherited baselines and replayed cumulative prefixes
+are subtracted once. Ambiguous, cyclic, or otherwise unsupported cases retain their observed
+rollout contribution and remain explicit in reconciliation diagnostics; no guessed baseline is
+subtracted. Missing usage remains null rather than becoming zero.
+
+Mean, median, and nearest-rank p90 tokens/session remain distributions of observed per-rollout
+totals. They are not additive account totals and are labelled as observed in terminal output.
 
 Repository grouping uses `repository_root` as its identity and `repository_name` as its display
 label. Model grouping uses the normalized model/provider pair. Day and Monday-starting week groups
 convert UTC session timestamps into the requested local or IANA timezone before assigning buckets.
 Sessions/day uses the selected calendar window; with no time filter it uses the inclusive span from
 the first to latest matching activity date.
+
+Incremental child usage is attributed to the child's own start time, normalized repository, and
+model. A parent outside a selected time window does not reintroduce its historical baseline into
+that window. Local rollout telemetry is not guaranteed to equal OpenAI billing, quota, or other
+server-side accounting, and Codex Insights does not claim to reproduce a private accounting
+algorithm.

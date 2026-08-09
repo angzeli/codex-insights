@@ -76,6 +76,7 @@ class UsageMetrics:
 
     session_count: int
     total_tokens: int | None
+    observed_total_tokens: int | None
     input_tokens: int | None
     cached_input_tokens: int | None
     output_tokens: int | None
@@ -90,6 +91,7 @@ class UsageMetrics:
         return {
             "session_count": self.session_count,
             "total_tokens": self.total_tokens,
+            "observed_total_tokens": self.observed_total_tokens,
             "input_tokens": self.input_tokens,
             "cached_input_tokens": self.cached_input_tokens,
             "output_tokens": self.output_tokens,
@@ -98,7 +100,49 @@ class UsageMetrics:
             "median_tokens_per_session": self.median_tokens_per_session,
             "p90_tokens_per_session": self.p90_tokens_per_session,
             "sessions_per_day": self.sessions_per_day,
+            "token_semantics": "reconciled_aggregate",
+            "distribution_semantics": "observed_per_rollout",
             "coverage": self.coverage.to_dict(),
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class UsageReconciliation:
+    """Aggregate evidence for observed versus lineage-adjusted token totals."""
+
+    observed_rollout_tokens: int | None
+    inherited_replayed_tokens: int | None
+    reconciled_tokens: int | None
+    session_count: int
+    sessions_with_token_data: int
+    root_threads: int
+    child_threads: int
+    confidently_reconciled_children: int
+    independent_children: int
+    ambiguous_children: int
+    unavailable_children: int
+    cyclic_children: int
+    ambiguous_observed_tokens: int | None
+    orphan_relationships: int
+    child_reconciliation_coverage: float | None
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "observed_rollout_tokens": self.observed_rollout_tokens,
+            "inherited_replayed_tokens": self.inherited_replayed_tokens,
+            "reconciled_tokens": self.reconciled_tokens,
+            "session_count": self.session_count,
+            "sessions_with_token_data": self.sessions_with_token_data,
+            "root_threads": self.root_threads,
+            "child_threads": self.child_threads,
+            "confidently_reconciled_children": self.confidently_reconciled_children,
+            "independent_children": self.independent_children,
+            "ambiguous_children": self.ambiguous_children,
+            "unavailable_children": self.unavailable_children,
+            "cyclic_children": self.cyclic_children,
+            "ambiguous_observed_tokens": self.ambiguous_observed_tokens,
+            "orphan_relationships": self.orphan_relationships,
+            "child_reconciliation_coverage": self.child_reconciliation_coverage,
         }
 
 
@@ -136,6 +180,7 @@ class UsageReport:
     until: datetime | None
     metrics: UsageMetrics
     groups: tuple[UsageGroup, ...]
+    reconciliation: UsageReconciliation | None = None
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -145,6 +190,9 @@ class UsageReport:
             "until": _json_datetime(self.until),
             "metrics": self.metrics.to_dict(),
             "groups": [group.to_dict() for group in self.groups],
+            "reconciliation": (
+                self.reconciliation.to_dict() if self.reconciliation is not None else None
+            ),
         }
 
 
@@ -173,8 +221,9 @@ def get_usage_report(
     timezone: TimezoneSpec | None = None,
     top: int | None = None,
     now: datetime | None = None,
+    include_reconciliation: bool = False,
 ) -> UsageReport:
-    """Aggregate normalized per-session totals without reopening source rollouts."""
+    """Aggregate lineage-adjusted totals without reopening source rollouts."""
 
     selected = filters or SessionFilters(limit=1)
     zone = timezone or resolve_timezone(None)
@@ -192,6 +241,12 @@ def get_usage_report(
             _usage_query(selected),
             _usage_parameters(selected),
         ).fetchall()
+        orphan_relationships = int(
+            connection.execute(
+                "SELECT COUNT(*) FROM thread_relationships "
+                "WHERE parent_session_id IS NULL OR child_session_id IS NULL"
+            ).fetchone()[0]
+        )
 
     scope_start, scope_end = _scope_dates(rows, selected, zone.timezone, reference)
     scope_days = _calendar_days(scope_start, scope_end)
@@ -206,6 +261,9 @@ def get_usage_report(
         until=selected.until,
         metrics=metrics,
         groups=groups,
+        reconciliation=(
+            _reconciliation(rows, orphan_relationships) if include_reconciliation else None
+        ),
     )
 
 
@@ -229,18 +287,16 @@ def _usage_query(filters: SessionFilters) -> str:
     return f"""
         SELECT s.source_session_id, s.started_at, s.repository_root, s.repository_name,
                s.model, s.model_provider, u.usage_semantics,
-               CASE WHEN u.usage_semantics != 'unavailable' THEN u.total_tokens END
-                   AS total_tokens,
-               CASE WHEN u.usage_semantics != 'unavailable' THEN u.input_tokens END
-                   AS input_tokens,
-               CASE WHEN u.usage_semantics != 'unavailable' THEN u.cached_input_tokens END
-                   AS cached_input_tokens,
-               CASE WHEN u.usage_semantics != 'unavailable' THEN u.output_tokens END
-                   AS output_tokens,
-               CASE WHEN u.usage_semantics != 'unavailable'
-                    THEN u.reasoning_output_tokens END AS reasoning_output_tokens
+               u.aggregate_total_tokens AS total_tokens,
+               u.aggregate_input_tokens AS input_tokens,
+               u.aggregate_cached_input_tokens AS cached_input_tokens,
+               u.aggregate_output_tokens AS output_tokens,
+               u.aggregate_reasoning_output_tokens AS reasoning_output_tokens,
+               u.observed_total_tokens,
+               u.accounting_status,
+               u.inherited_baseline_total_tokens
         FROM source_sessions AS s
-        LEFT JOIN usage AS u ON u.source_session_id = s.id
+        LEFT JOIN accounted_usage AS u ON u.source_session_id = s.id
         {where}
         ORDER BY s.started_at IS NULL, s.started_at ASC, s.source_session_id ASC
     """
@@ -362,6 +418,11 @@ def _metrics(rows: list[sqlite3.Row], days: int | None) -> UsageMetrics:
         field: [int(row[field]) for row in rows if row[field] is not None] for field in TOKEN_FIELDS
     }
     totals = values["total_tokens"]
+    observed_totals = [
+        int(row["observed_total_tokens"])
+        for row in rows
+        if row["observed_total_tokens"] is not None
+    ]
     coverage = UsageCoverage(
         session_count=len(rows),
         total_tokens=len(totals),
@@ -373,15 +434,72 @@ def _metrics(rows: list[sqlite3.Row], days: int | None) -> UsageMetrics:
     return UsageMetrics(
         session_count=len(rows),
         total_tokens=_sum_known(totals),
+        observed_total_tokens=_sum_known(observed_totals),
         input_tokens=_sum_known(values["input_tokens"]),
         cached_input_tokens=_sum_known(values["cached_input_tokens"]),
         output_tokens=_sum_known(values["output_tokens"]),
         reasoning_output_tokens=_sum_known(values["reasoning_output_tokens"]),
-        mean_tokens_per_session=fmean(totals) if totals else None,
-        median_tokens_per_session=float(median(totals)) if totals else None,
-        p90_tokens_per_session=float(_nearest_rank(totals, 0.90)) if totals else None,
+        mean_tokens_per_session=fmean(observed_totals) if observed_totals else None,
+        median_tokens_per_session=(
+            float(median(observed_totals)) if observed_totals else None
+        ),
+        p90_tokens_per_session=(
+            float(_nearest_rank(observed_totals, 0.90)) if observed_totals else None
+        ),
         sessions_per_day=(len(rows) / days if days else None),
         coverage=coverage,
+    )
+
+
+def _reconciliation(
+    rows: list[sqlite3.Row],
+    orphan_relationships: int,
+) -> UsageReconciliation:
+    observed = [
+        int(row["observed_total_tokens"])
+        for row in rows
+        if row["observed_total_tokens"] is not None
+    ]
+    reconciled = [int(row["total_tokens"]) for row in rows if row["total_tokens"] is not None]
+    statuses = [str(row["accounting_status"] or "root") for row in rows]
+    confident = {"inherited_exact", "inherited_prefix"}
+    child_rows = [row for row in rows if str(row["accounting_status"] or "root") != "root"]
+    children_with_observed = sum(row["observed_total_tokens"] is not None for row in child_rows)
+    reconciled_children = sum(
+        str(row["accounting_status"]) in confident | {"independent"}
+        and row["observed_total_tokens"] is not None
+        for row in child_rows
+    )
+    inherited = [
+        int(row["inherited_baseline_total_tokens"])
+        for row in rows
+        if str(row["accounting_status"]) in confident
+        and row["inherited_baseline_total_tokens"] is not None
+    ]
+    ambiguous = [
+        int(row["observed_total_tokens"])
+        for row in rows
+        if str(row["accounting_status"]) in {"ambiguous", "cycle"}
+        and row["observed_total_tokens"] is not None
+    ]
+    return UsageReconciliation(
+        observed_rollout_tokens=_sum_known(observed),
+        inherited_replayed_tokens=sum(inherited),
+        reconciled_tokens=_sum_known(reconciled),
+        session_count=len(rows),
+        sessions_with_token_data=len(observed),
+        root_threads=statuses.count("root"),
+        child_threads=len(child_rows),
+        confidently_reconciled_children=sum(status in confident for status in statuses),
+        independent_children=statuses.count("independent"),
+        ambiguous_children=statuses.count("ambiguous"),
+        unavailable_children=statuses.count("unavailable"),
+        cyclic_children=statuses.count("cycle"),
+        ambiguous_observed_tokens=sum(ambiguous),
+        orphan_relationships=orphan_relationships,
+        child_reconciliation_coverage=(
+            reconciled_children / children_with_observed if children_with_observed else None
+        ),
     )
 
 

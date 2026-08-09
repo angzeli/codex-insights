@@ -39,9 +39,13 @@ def test_usage_cli_summary_and_json_breakdowns(
             *common,
         ],
     )
+    reconciliation = runner.invoke(
+        app,
+        ["usage", "--reconciliation", "--json", *common],
+    )
 
     assert summary.exit_code == 0
-    assert "150 known tokens across 2/4 sessions" in summary.stdout
+    assert "150 reconciled tokens across 2/4 sessions" in summary.stdout
     assert "Reasoning output" in summary.stdout
     assert "unknown" in summary.stdout
     assert repos.exit_code == 0
@@ -58,6 +62,12 @@ def test_usage_cli_summary_and_json_breakdowns(
         "2026-08-08",
         "2026-08-09",
     ]
+    assert reconciliation.exit_code == 0
+    reconciliation_payload = json.loads(reconciliation.stdout)["reconciliation"]
+    assert reconciliation_payload["observed_rollout_tokens"] == 150
+    assert reconciliation_payload["inherited_replayed_tokens"] == 0
+    assert reconciliation_payload["reconciled_tokens"] == 150
+    assert reconciliation_payload["root_threads"] == 4
 
 
 def test_usage_cli_filters_and_validation(

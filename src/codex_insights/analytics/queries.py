@@ -224,7 +224,7 @@ class SessionDetail:
 
 @dataclass(frozen=True, slots=True)
 class RepositorySummary:
-    """Session and known-token totals grouped by normalized repository."""
+    """Session and reconciled-token totals grouped by normalized repository."""
 
     repository: str
     repository_root: Path | None
@@ -245,12 +245,13 @@ class RepositorySummary:
             "latest_activity": _json_datetime(self.latest_activity),
             "total_known_tokens": self.total_known_tokens,
             "sessions_with_token_data": self.sessions_with_token_data,
+            "token_semantics": "reconciled_aggregate",
         }
 
 
 @dataclass(frozen=True, slots=True)
 class ModelSummary:
-    """Session and known-token totals grouped by normalized model/provider."""
+    """Session and reconciled-token totals grouped by normalized model/provider."""
 
     model: str
     model_provider: str | None
@@ -269,6 +270,7 @@ class ModelSummary:
             "latest_activity": _json_datetime(self.latest_activity),
             "total_known_tokens": self.total_known_tokens,
             "sessions_with_token_data": self.sessions_with_token_data,
+            "token_semantics": "reconciled_aggregate",
         }
 
 
@@ -301,6 +303,7 @@ class StatsSummary:
             "total_known_tokens": self.total_known_tokens,
             "sessions_with_token_data": self.sessions_with_token_data,
             "token_data_fraction": self.token_data_fraction,
+            "token_semantics": "reconciled_aggregate",
         }
 
 
@@ -434,13 +437,11 @@ def list_repositories(
                    COUNT(*) AS session_count,
                    MIN(s.started_at) AS first_activity,
                    MAX(s.started_at) AS latest_activity,
-                   SUM(CASE WHEN u.usage_semantics != 'unavailable'
-                            THEN u.total_tokens END) AS total_known_tokens,
-                   SUM(CASE WHEN u.usage_semantics != 'unavailable'
-                                  AND u.total_tokens IS NOT NULL
+                   SUM(u.aggregate_total_tokens) AS total_known_tokens,
+                   SUM(CASE WHEN u.aggregate_total_tokens IS NOT NULL
                             THEN 1 ELSE 0 END) AS sessions_with_token_data
             FROM source_sessions AS s
-            LEFT JOIN usage AS u ON u.source_session_id = s.id
+            LEFT JOIN accounted_usage AS u ON u.source_session_id = s.id
             GROUP BY s.repository_root
             ORDER BY session_count DESC, latest_activity DESC,
                      COALESCE(repository_name, '') ASC, COALESCE(s.repository_root, '') ASC
@@ -463,13 +464,11 @@ def list_models(
                    COUNT(*) AS session_count,
                    MIN(s.started_at) AS first_activity,
                    MAX(s.started_at) AS latest_activity,
-                   SUM(CASE WHEN u.usage_semantics != 'unavailable'
-                            THEN u.total_tokens END) AS total_known_tokens,
-                   SUM(CASE WHEN u.usage_semantics != 'unavailable'
-                                  AND u.total_tokens IS NOT NULL
+                   SUM(u.aggregate_total_tokens) AS total_known_tokens,
+                   SUM(CASE WHEN u.aggregate_total_tokens IS NOT NULL
                             THEN 1 ELSE 0 END) AS sessions_with_token_data
             FROM source_sessions AS s
-            LEFT JOIN usage AS u ON u.source_session_id = s.id
+            LEFT JOIN accounted_usage AS u ON u.source_session_id = s.id
             GROUP BY s.model, s.model_provider
             ORDER BY session_count DESC, latest_activity DESC,
                      COALESCE(s.model, '') ASC, COALESCE(s.model_provider, '') ASC
@@ -504,13 +503,11 @@ def get_stats(
                             THEN 1 ELSE 0 END) AS sessions_last_7_days,
                    SUM(CASE WHEN s.started_at >= ? AND s.started_at <= ?
                             THEN 1 ELSE 0 END) AS sessions_last_30_days,
-                   SUM(CASE WHEN u.usage_semantics != 'unavailable'
-                            THEN u.total_tokens END) AS total_known_tokens,
-                   SUM(CASE WHEN u.usage_semantics != 'unavailable'
-                                  AND u.total_tokens IS NOT NULL
+                   SUM(u.aggregate_total_tokens) AS total_known_tokens,
+                   SUM(CASE WHEN u.aggregate_total_tokens IS NOT NULL
                             THEN 1 ELSE 0 END) AS sessions_with_token_data
             FROM source_sessions AS s
-            LEFT JOIN usage AS u ON u.source_session_id = s.id
+            LEFT JOIN accounted_usage AS u ON u.source_session_id = s.id
             """,
             (
                 _database_datetime(today_start),
