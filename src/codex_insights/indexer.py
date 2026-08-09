@@ -31,6 +31,7 @@ from codex_insights.models import (
     TokenLineageAssessment,
     UsageVector,
 )
+from codex_insights.outcomes import reconcile_session_outcomes
 from codex_insights.privacy import PROMPT_CONTENT_SCHEMA_VERSION, redact_prompt
 from codex_insights.provenance import (
     PROVENANCE_ALGORITHM_VERSION,
@@ -124,6 +125,7 @@ def index_source(
                 parsed_sessions=parsed_sessions,
             )
             warnings.extend(reconcile_git_commits(connection))
+            reconcile_session_outcomes(connection)
             _reconcile_prompts(
                 connection,
                 adapter=adapter,

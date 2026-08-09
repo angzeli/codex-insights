@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 import sqlite3
 from contextlib import closing
@@ -44,7 +45,10 @@ SELECT s.*,
        i.source_schema_version AS coverage_schema_version,
        i.size_bytes AS coverage_size_bytes, i.mtime_ns AS coverage_mtime_ns,
        i.last_parsed_byte_offset AS coverage_parsed_byte_offset,
-       i.indexed_at AS coverage_indexed_at
+       i.indexed_at AS coverage_indexed_at,
+       o.outcome, o.confidence AS outcome_confidence,
+       o.evidence_json AS outcome_evidence_json,
+       o.classifier_version AS outcome_classifier_version
 FROM source_sessions AS s
 LEFT JOIN usage AS u ON u.source_session_id = s.id
 LEFT JOIN event_totals AS e ON e.source_session_id = s.id
@@ -52,6 +56,7 @@ LEFT JOIN ranked_ingestion AS i
        ON i.source_home = s.source_home
       AND i.source_session_id = s.source_session_id
       AND i.rank = 1
+LEFT JOIN session_outcomes AS o ON o.session_id = s.id
 """
 
 
@@ -166,6 +171,25 @@ class SessionToolSummary:
 
 
 @dataclass(frozen=True, slots=True)
+class SessionOutcomeView:
+    """Explainable outcome attached to session detail."""
+
+    outcome: str
+    confidence: str
+    evidence: tuple[str, ...]
+    classifier_version: str | None
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "outcome": self.outcome,
+            "confidence": self.confidence,
+            "evidence": list(self.evidence),
+            "classifier_version": self.classifier_version,
+            "semantics": "originated_evidence",
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class SessionListItem:
     """Compact session row for terminal lists and machine-readable output."""
 
@@ -218,6 +242,7 @@ class SessionDetail:
     usage: TokenUsageView
     event_counts: tuple[tuple[str, int], ...]
     tool_activity: SessionToolSummary
+    outcome: SessionOutcomeView
     source_coverage: SourceCoverageView
     warnings: tuple[str, ...]
 
@@ -242,6 +267,7 @@ class SessionDetail:
             "usage": self.usage.to_dict(),
             "event_counts": dict(self.event_counts),
             "tool_activity": self.tool_activity.to_dict(),
+            "outcome": self.outcome.to_dict(),
             "source_coverage": self.source_coverage.to_dict(),
             "warnings": list(self.warnings),
         }
@@ -650,8 +676,28 @@ def _session_detail(
         usage=_usage_view(row),
         event_counts=event_counts,
         tool_activity=tool_activity,
+        outcome=_outcome_view(row),
         source_coverage=coverage,
         warnings=warnings,
+    )
+
+
+def _outcome_view(row: sqlite3.Row) -> SessionOutcomeView:
+    raw = row["outcome_evidence_json"]
+    try:
+        decoded = json.loads(str(raw)) if raw is not None else []
+    except json.JSONDecodeError:
+        decoded = ["invalid_evidence"]
+    evidence = (
+        tuple(str(item) for item in decoded)
+        if isinstance(decoded, list)
+        else ("invalid_evidence",)
+    )
+    return SessionOutcomeView(
+        outcome=_optional_str(row["outcome"]) or "unknown",
+        confidence=_optional_str(row["outcome_confidence"]) or "low",
+        evidence=evidence,
+        classifier_version=_optional_str(row["outcome_classifier_version"]),
     )
 
 

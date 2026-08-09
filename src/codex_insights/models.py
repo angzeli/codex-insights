@@ -11,11 +11,13 @@ from pathlib import Path
 class SessionOutcome(StrEnum):
     """A deliberately conservative outcome classification."""
 
-    UNKNOWN = "unknown"
-    SUCCESSFUL = "successful"
+    SUCCESS = "success"
+    SUCCESS_WITH_WARNINGS = "success_with_warnings"
+    PARTIAL = "partial"
     FAILED = "failed"
     ABANDONED = "abandoned"
-    REWORKED = "reworked"
+    NO_CHANGE = "no_change"
+    UNKNOWN = "unknown"
 
 
 class UsageSemantics(StrEnum):

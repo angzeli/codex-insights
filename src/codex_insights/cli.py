@@ -20,6 +20,7 @@ from codex_insights.db import UnsafeDatabasePathError, inspect_index
 from codex_insights.git_cli import register_git_commands
 from codex_insights.history_cli import register_history_commands
 from codex_insights.indexer import index_source
+from codex_insights.outcome_cli import register_outcome_command
 from codex_insights.prompt_cli import register_prompt_commands
 from codex_insights.provenance_cli import register_provenance_command
 from codex_insights.tool_cli import register_tool_commands
@@ -37,6 +38,7 @@ register_usage_command(app)
 register_provenance_command(app)
 register_prompt_commands(app)
 register_tool_commands(app)
+register_outcome_command(app)
 
 
 @app.command()

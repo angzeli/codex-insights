@@ -7,7 +7,7 @@ from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
 
-SCHEMA_VERSION = 9
+SCHEMA_VERSION = 10
 
 _MIGRATION_1 = """
 CREATE TABLE source_sessions (
@@ -526,6 +526,24 @@ CREATE INDEX session_commit_confidence_idx
     ON session_commit_associations(confidence, session_id);
 """
 
+_MIGRATION_10 = """
+CREATE TABLE session_outcomes (
+    session_id INTEGER PRIMARY KEY REFERENCES source_sessions(id) ON DELETE CASCADE,
+    outcome TEXT NOT NULL CHECK (
+        outcome IN (
+            'success', 'success_with_warnings', 'partial', 'failed',
+            'abandoned', 'no_change', 'unknown'
+        )
+    ),
+    confidence TEXT NOT NULL CHECK (confidence IN ('high', 'medium', 'low')),
+    evidence_json TEXT NOT NULL,
+    evidence_count INTEGER NOT NULL CHECK (evidence_count >= 0),
+    classifier_version TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX session_outcomes_result_idx ON session_outcomes(outcome, confidence);
+"""
+
 _MIGRATIONS = {
     1: _MIGRATION_1,
     2: _MIGRATION_2,
@@ -536,6 +554,7 @@ _MIGRATIONS = {
     7: _MIGRATION_7,
     8: _MIGRATION_8,
     9: _MIGRATION_9,
+    10: _MIGRATION_10,
 }
 
 

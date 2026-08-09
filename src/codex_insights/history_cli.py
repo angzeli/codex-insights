@@ -319,6 +319,15 @@ def _render_session(detail: SessionDetail) -> None:
     )
     console.print(usage)
 
+    outcome = Table(title="Outcome", show_header=False, box=None, pad_edge=False)
+    outcome.add_column("Field", style="bold cyan", no_wrap=True)
+    outcome.add_column("Value", overflow="fold")
+    outcome.add_row("Classification", detail.outcome.outcome)
+    outcome.add_row("Confidence", detail.outcome.confidence)
+    outcome.add_row("Evidence", ", ".join(detail.outcome.evidence) or "none")
+    outcome.add_row("Classifier", detail.outcome.classifier_version or "not classified")
+    console.print(outcome)
+
     events = Table(title="Event categories", box=None, pad_edge=False)
     events.add_column("Category")
     events.add_column("Count", justify="right")
