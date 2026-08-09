@@ -1578,12 +1578,11 @@ def _preserve_rollout_metadata(
 ) -> NormalizedSourceSession:
     if existing is None:
         return session
+    existing_end = _stored_datetime(existing["apparent_ended_at"])
     return replace(
         session,
         started_at=session.started_at or _stored_datetime(existing["started_at"]),
-        apparent_ended_at=(
-            session.apparent_ended_at or _stored_datetime(existing["apparent_ended_at"])
-        ),
+        apparent_ended_at=_latest_datetime(session.apparent_ended_at, existing_end),
         source_timezone_offset_minutes=(
             session.source_timezone_offset_minutes
             if session.source_timezone_offset_minutes is not None
@@ -1606,6 +1605,14 @@ def _stored_datetime(value: object) -> datetime | None:
     except ValueError:
         return None
     return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=UTC)
+
+
+def _latest_datetime(left: datetime | None, right: datetime | None) -> datetime | None:
+    if left is None:
+        return right
+    if right is None:
+        return left
+    return max(left, right)
 
 
 def _stored_path(value: object) -> Path | None:

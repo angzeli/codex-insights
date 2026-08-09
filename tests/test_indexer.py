@@ -129,6 +129,41 @@ def test_index_is_idempotent_when_sources_are_unchanged(
     assert before == after
 
 
+def test_unchanged_archived_session_preserves_later_rollout_end(
+    synthetic_audit_home: Path,
+    tmp_path: Path,
+) -> None:
+    rollout = synthetic_audit_home / "archived_sessions" / "rollout-archived.jsonl"
+    with rollout.open("a", encoding="utf-8") as handle:
+        handle.write(
+            json.dumps(
+                {
+                    "type": "event_msg",
+                    "timestamp": "2024-01-01T00:02:00Z",
+                    "payload": {"type": "task_complete"},
+                }
+            )
+            + "\n"
+        )
+    database = tmp_path / "index.sqlite3"
+    adapter = CodexLocalAdapter(resolve_codex_home(synthetic_audit_home))
+
+    index_source(adapter, database, codex_home=synthetic_audit_home)
+    second = index_source(adapter, database, codex_home=synthetic_audit_home)
+    with sqlite3.connect(database) as connection:
+        apparent_end = connection.execute(
+            """
+            SELECT apparent_ended_at FROM source_sessions
+            WHERE source_session_id = 'synthetic-thread-archived'
+            """
+        ).fetchone()[0]
+
+    assert second.updated == 0
+    assert second.unchanged == 3
+    assert second.skipped == 1
+    assert apparent_end == "2024-01-01T00:02:00Z"
+
+
 def test_cumulative_token_snapshots_are_not_summed_with_each_other_or_turn_deltas(
     synthetic_audit_home: Path,
 ) -> None:
