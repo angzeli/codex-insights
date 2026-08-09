@@ -136,11 +136,31 @@ def assess_event_provenance(
             )
 
     parent_fingerprints = {(event.family, event.fingerprint) for event in parent}
+    parent_stable_ids: dict[tuple[EventFamily, str], set[str | None]] = {}
+    for event in parent:
+        parent_stable_ids.setdefault((event.family, event.fingerprint), set()).add(
+            event.stable_id_digest
+        )
     final: list[EventProvenanceDecision] = []
     for child_index, event in enumerate(child):
         decision = resolved[child_index]
         if decision is not None:
             final.append(decision)
+        elif (
+            (event.family, event.fingerprint) in parent_fingerprints
+            and event.stable_id_digest is not None
+            and None not in parent_stable_ids[(event.family, event.fingerprint)]
+            and event.stable_id_digest
+            not in parent_stable_ids[(event.family, event.fingerprint)]
+        ):
+            final.append(
+                EventProvenanceDecision(
+                    child_index=child_index,
+                    status=EventProvenanceStatus.ORIGIN,
+                    confidence="high",
+                    evidence_type="distinct_stable_source_id",
+                )
+            )
         elif (event.family, event.fingerprint) in parent_fingerprints:
             final.append(
                 EventProvenanceDecision(

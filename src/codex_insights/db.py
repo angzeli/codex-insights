@@ -7,7 +7,7 @@ from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 
 _MIGRATION_1 = """
 CREATE TABLE source_sessions (
@@ -408,6 +408,71 @@ CREATE TRIGGER prompts_fts_after_update AFTER UPDATE OF text ON prompts BEGIN
 END;
 """
 
+_MIGRATION_7 = """
+CREATE TABLE tool_activity (
+    id INTEGER PRIMARY KEY,
+    event_observation_id INTEGER NOT NULL
+        REFERENCES event_observations(id) ON DELETE CASCADE,
+    observed_session_id INTEGER NOT NULL REFERENCES source_sessions(id) ON DELETE CASCADE,
+    origin_session_id INTEGER REFERENCES source_sessions(id) ON DELETE SET NULL,
+    source_ordinal INTEGER NOT NULL CHECK (source_ordinal >= 0),
+    operation_ordinal INTEGER NOT NULL CHECK (operation_ordinal >= 0),
+    occurred_at TEXT,
+    tool_family TEXT NOT NULL CHECK (
+        tool_family IN (
+            'shell', 'patch', 'collaboration', 'user_interaction',
+            'file', 'network', 'other', 'unknown'
+        )
+    ),
+    tool_name TEXT NOT NULL,
+    command_category TEXT NOT NULL CHECK (
+        command_category IN (
+            'git_inspection', 'git_mutation', 'testing', 'linting',
+            'type_checking', 'build_packaging', 'filesystem_inspection',
+            'text_search', 'python_execution', 'dependency_management',
+            'editing_patching', 'scientific_computation',
+            'process_status_monitoring', 'wait_poll', 'user_interaction',
+            'other', 'unknown'
+        )
+    ),
+    command_text TEXT,
+    command_fingerprint TEXT,
+    executable TEXT,
+    test_scope TEXT NOT NULL CHECK (
+        test_scope IN ('full_suite', 'file', 'subset', 'unknown', 'not_applicable')
+    ),
+    call_id_digest TEXT,
+    output_event_observation_id INTEGER
+        REFERENCES event_observations(id) ON DELETE SET NULL,
+    exit_code INTEGER,
+    duration_seconds REAL CHECK (duration_seconds IS NULL OR duration_seconds >= 0),
+    result_status TEXT NOT NULL CHECK (result_status IN ('success', 'failure', 'unknown')),
+    provenance_status TEXT NOT NULL CHECK (
+        provenance_status IN (
+            'origin', 'inherited_exact', 'inherited_prefix',
+            'observed_duplicate', 'ambiguous', 'unknown'
+        )
+    ),
+    redacted INTEGER NOT NULL DEFAULT 0 CHECK (redacted IN (0, 1)),
+    truncated INTEGER NOT NULL DEFAULT 0 CHECK (truncated IN (0, 1)),
+    extraction_version TEXT NOT NULL,
+    classifier_version TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE (
+        observed_session_id, source_ordinal, operation_ordinal, extraction_version
+    )
+);
+
+CREATE INDEX tool_activity_origin_idx
+    ON tool_activity(origin_session_id, provenance_status, occurred_at);
+CREATE INDEX tool_activity_category_idx
+    ON tool_activity(command_category, provenance_status);
+CREATE INDEX tool_activity_command_idx
+    ON tool_activity(command_fingerprint, provenance_status);
+CREATE INDEX tool_activity_call_idx
+    ON tool_activity(observed_session_id, call_id_digest);
+"""
+
 _MIGRATIONS = {
     1: _MIGRATION_1,
     2: _MIGRATION_2,
@@ -415,6 +480,7 @@ _MIGRATIONS = {
     4: _MIGRATION_4,
     5: _MIGRATION_5,
     6: _MIGRATION_6,
+    7: _MIGRATION_7,
 }
 
 

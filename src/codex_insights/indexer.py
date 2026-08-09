@@ -23,6 +23,7 @@ from codex_insights.models import (
     NormalizedEventObservation,
     NormalizedSourceSession,
     NormalizedThreadRelationship,
+    NormalizedToolResultCandidate,
     NormalizedUsage,
     ParsedSourceSession,
     SourceSessionCandidate,
@@ -108,6 +109,12 @@ def index_source(
                     relationships=relationships,
                     codex_home=codex_home,
                 )
+            )
+            _reconcile_tool_activity(
+                connection,
+                adapter=adapter,
+                codex_home=codex_home,
+                parsed_sessions=parsed_sessions,
             )
             _reconcile_prompts(
                 connection,
@@ -390,6 +397,116 @@ def _reconcile_relationships(
         cycle_source_ids=topology.cycle_nodes,
     )
     return tuple(warnings)
+
+
+def _reconcile_tool_activity(
+    connection: sqlite3.Connection,
+    *,
+    adapter: IndexSourceAdapter,
+    codex_home: Path,
+    parsed_sessions: dict[str, ParsedSourceSession],
+) -> None:
+    """Persist bounded tool metadata after the shared event provenance pass."""
+
+    source_home = str(codex_home.expanduser().resolve(strict=False))
+    session_ids = {
+        str(row["source_session_id"]): int(row["id"])
+        for row in connection.execute(
+            "SELECT id, source_session_id FROM source_sessions "
+            "WHERE source_type = ? AND source_home = ?",
+            (adapter.name, source_home),
+        )
+    }
+    with connection:
+        for source_session_id, parsed in sorted(parsed_sessions.items()):
+            session_id = session_ids.get(source_session_id)
+            if session_id is None:
+                continue
+            connection.execute(
+                "DELETE FROM tool_activity WHERE observed_session_id = ?",
+                (session_id,),
+            )
+            event_rows = {
+                int(row["source_ordinal"]): row for row in _event_rows(connection, session_id)
+            }
+            calls_per_id: dict[str, int] = {}
+            for candidate in parsed.tool_call_candidates:
+                if candidate.call_id_digest is not None:
+                    calls_per_id[candidate.call_id_digest] = (
+                        calls_per_id.get(candidate.call_id_digest, 0) + 1
+                    )
+            results_by_id: dict[str, list[NormalizedToolResultCandidate]] = {}
+            for candidate_result in parsed.tool_result_candidates:
+                if candidate_result.call_id_digest is not None:
+                    results_by_id.setdefault(candidate_result.call_id_digest, []).append(
+                        candidate_result
+                    )
+            now = _utc_now()
+            for candidate in parsed.tool_call_candidates:
+                event_row = event_rows.get(candidate.source_ordinal)
+                if event_row is None:
+                    continue
+                output_result: NormalizedToolResultCandidate | None = None
+                if (
+                    candidate.call_id_digest is not None
+                    and calls_per_id.get(candidate.call_id_digest) == 1
+                ):
+                    matches = results_by_id.get(candidate.call_id_digest, [])
+                    known = [
+                        item
+                        for item in matches
+                        if item.status.value != "unknown"
+                    ]
+                    if len(known) == 1:
+                        output_result = known[0]
+                    elif len(matches) == 1:
+                        output_result = matches[0]
+                output_event_id = None
+                if output_result is not None:
+                    output_row = event_rows.get(output_result.source_ordinal)
+                    output_event_id = int(output_row["id"]) if output_row is not None else None
+                connection.execute(
+                    """
+                    INSERT INTO tool_activity(
+                        event_observation_id, observed_session_id, origin_session_id,
+                        source_ordinal, operation_ordinal, occurred_at, tool_family,
+                        tool_name, command_category, command_text, command_fingerprint,
+                        executable, test_scope, call_id_digest,
+                        output_event_observation_id, exit_code, duration_seconds,
+                        result_status, provenance_status, redacted, truncated,
+                        extraction_version, classifier_version, updated_at
+                    ) VALUES (
+                        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+                    )
+                    """,
+                    (
+                        int(event_row["id"]),
+                        session_id,
+                        event_row["origin_session_id"],
+                        candidate.source_ordinal,
+                        candidate.operation_ordinal,
+                        _format_datetime(candidate.occurred_at),
+                        candidate.tool_family.value,
+                        candidate.tool_name,
+                        candidate.command_category.value,
+                        candidate.command_text,
+                        candidate.command_fingerprint,
+                        candidate.executable,
+                        candidate.test_scope.value,
+                        candidate.call_id_digest,
+                        output_event_id,
+                        output_result.exit_code if output_result is not None else None,
+                        output_result.duration_seconds if output_result is not None else None,
+                        output_result.status.value if output_result is not None else "unknown",
+                        str(event_row["provenance_status"]),
+                        int(candidate.redacted),
+                        int(candidate.truncated),
+                        candidate.extraction_version,
+                        candidate.classifier_version,
+                        now,
+                    ),
+                )
 
 
 def _parse_for_lineage(

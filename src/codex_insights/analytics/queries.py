@@ -143,6 +143,29 @@ class SourceCoverageView:
 
 
 @dataclass(frozen=True, slots=True)
+class SessionToolSummary:
+    """Compact provenance-aware tool evidence for session detail."""
+
+    originated: int
+    inherited: int
+    ambiguous: int
+    unknown: int
+    failed_results: int
+    command_categories: tuple[tuple[str, int], ...]
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "originated": self.originated,
+            "inherited": self.inherited,
+            "ambiguous": self.ambiguous,
+            "unknown": self.unknown,
+            "failed_results": self.failed_results,
+            "command_categories": dict(self.command_categories),
+            "semantics": "originated_events",
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class SessionListItem:
     """Compact session row for terminal lists and machine-readable output."""
 
@@ -194,6 +217,7 @@ class SessionDetail:
     archived: bool
     usage: TokenUsageView
     event_counts: tuple[tuple[str, int], ...]
+    tool_activity: SessionToolSummary
     source_coverage: SourceCoverageView
     warnings: tuple[str, ...]
 
@@ -217,6 +241,7 @@ class SessionDetail:
             "archived": self.archived,
             "usage": self.usage.to_dict(),
             "event_counts": dict(self.event_counts),
+            "tool_activity": self.tool_activity.to_dict(),
             "source_coverage": self.source_coverage.to_dict(),
             "warnings": list(self.warnings),
         }
@@ -419,7 +444,8 @@ def get_session(
                 (int(row["id"]),),
             )
         )
-    return _session_detail(cast(sqlite3.Row, row), event_counts)
+        tool_activity = _session_tool_summary(connection, int(row["id"]))
+    return _session_detail(cast(sqlite3.Row, row), event_counts, tool_activity)
 
 
 def list_repositories(
@@ -587,6 +613,7 @@ def _list_item(row: sqlite3.Row) -> SessionListItem:
 def _session_detail(
     row: sqlite3.Row,
     event_counts: tuple[tuple[str, int], ...],
+    tool_activity: SessionToolSummary,
 ) -> SessionDetail:
     started = _stored_datetime(row["started_at"])
     ended = _stored_datetime(row["apparent_ended_at"])
@@ -622,8 +649,41 @@ def _session_detail(
         archived=bool(row["archived"]),
         usage=_usage_view(row),
         event_counts=event_counts,
+        tool_activity=tool_activity,
         source_coverage=coverage,
         warnings=warnings,
+    )
+
+
+def _session_tool_summary(
+    connection: sqlite3.Connection,
+    session_id: int,
+) -> SessionToolSummary:
+    rows = connection.execute(
+        "SELECT provenance_status, origin_session_id, result_status, command_category "
+        "FROM tool_activity WHERE observed_session_id = ?",
+        (session_id,),
+    ).fetchall()
+    originated = [
+        row
+        for row in rows
+        if row["provenance_status"] == "origin" and row["origin_session_id"] == session_id
+    ]
+    categories: dict[str, int] = {}
+    for activity in originated:
+        category = str(activity["command_category"])
+        categories[category] = categories.get(category, 0) + 1
+    return SessionToolSummary(
+        originated=len(originated),
+        inherited=sum(
+            row["provenance_status"]
+            in {"inherited_exact", "inherited_prefix", "observed_duplicate"}
+            for row in rows
+        ),
+        ambiguous=sum(row["provenance_status"] == "ambiguous" for row in rows),
+        unknown=sum(row["provenance_status"] == "unknown" for row in rows),
+        failed_results=sum(row["result_status"] == "failure" for row in originated),
+        command_categories=tuple(sorted(categories.items())),
     )
 
 

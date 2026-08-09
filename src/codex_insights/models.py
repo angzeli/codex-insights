@@ -94,6 +94,59 @@ class EventProvenanceStatus(StrEnum):
     UNKNOWN = "unknown"
 
 
+class ToolFamily(StrEnum):
+    """Stable semantic families for normalized tool operations."""
+
+    SHELL = "shell"
+    PATCH = "patch"
+    COLLABORATION = "collaboration"
+    USER_INTERACTION = "user_interaction"
+    FILE = "file"
+    NETWORK = "network"
+    OTHER = "other"
+    UNKNOWN = "unknown"
+
+
+class CommandCategory(StrEnum):
+    """Deterministic command categories used by additive tool analytics."""
+
+    GIT_INSPECTION = "git_inspection"
+    GIT_MUTATION = "git_mutation"
+    TESTING = "testing"
+    LINTING = "linting"
+    TYPE_CHECKING = "type_checking"
+    BUILD_PACKAGING = "build_packaging"
+    FILESYSTEM_INSPECTION = "filesystem_inspection"
+    TEXT_SEARCH = "text_search"
+    PYTHON_EXECUTION = "python_execution"
+    DEPENDENCY_MANAGEMENT = "dependency_management"
+    EDITING_PATCHING = "editing_patching"
+    SCIENTIFIC_COMPUTATION = "scientific_computation"
+    PROCESS_STATUS_MONITORING = "process_status_monitoring"
+    WAIT_POLL = "wait_poll"
+    USER_INTERACTION = "user_interaction"
+    OTHER = "other"
+    UNKNOWN = "unknown"
+
+
+class TestScope(StrEnum):
+    """Conservative syntax-derived scope for validation commands."""
+
+    FULL_SUITE = "full_suite"
+    FILE = "file"
+    SUBSET = "subset"
+    UNKNOWN = "unknown"
+    NOT_APPLICABLE = "not_applicable"
+
+
+class ToolResultStatus(StrEnum):
+    """Result state when a normalized output exposes enough evidence."""
+
+    SUCCESS = "success"
+    FAILURE = "failure"
+    UNKNOWN = "unknown"
+
+
 @dataclass(frozen=True, slots=True)
 class ToolUsage:
     """Aggregate tool usage without captured stdout, stderr, or arguments."""
@@ -214,6 +267,38 @@ class NormalizedPromptCandidate:
 
 
 @dataclass(frozen=True, slots=True)
+class NormalizedToolCallCandidate:
+    """Privacy-filtered tool metadata derived behind the source adapter boundary."""
+
+    source_ordinal: int
+    operation_ordinal: int
+    occurred_at: datetime | None
+    call_id_digest: str | None
+    tool_family: ToolFamily
+    tool_name: str
+    command_category: CommandCategory
+    command_text: str | None = None
+    command_fingerprint: str | None = None
+    executable: str | None = None
+    test_scope: TestScope = TestScope.NOT_APPLICABLE
+    redacted: bool = False
+    truncated: bool = False
+    extraction_version: str = ""
+    classifier_version: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class NormalizedToolResultCandidate:
+    """Bounded result metadata correlated by a digested source call identifier."""
+
+    source_ordinal: int
+    call_id_digest: str | None
+    status: ToolResultStatus
+    exit_code: int | None = None
+    duration_seconds: float | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class NormalizedSourceSession:
     """Stable source-session representation consumed by the indexer and database."""
 
@@ -265,3 +350,7 @@ class ParsedSourceSession:
     token_snapshots: tuple[NormalizedTokenSnapshot, ...] = field(default_factory=tuple)
     event_observations: tuple[NormalizedEventObservation, ...] = field(default_factory=tuple)
     prompt_candidates: tuple[NormalizedPromptCandidate, ...] = field(default_factory=tuple)
+    tool_call_candidates: tuple[NormalizedToolCallCandidate, ...] = field(default_factory=tuple)
+    tool_result_candidates: tuple[NormalizedToolResultCandidate, ...] = field(
+        default_factory=tuple
+    )

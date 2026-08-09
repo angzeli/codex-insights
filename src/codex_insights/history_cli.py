@@ -314,6 +314,24 @@ def _render_session(detail: SessionDetail) -> None:
         events.add_row("none observed", "—")
     console.print(events)
 
+    tools = Table(title="Tool activity", show_header=False, box=None, pad_edge=False)
+    tools.add_column("Metric", style="bold cyan", no_wrap=True)
+    tools.add_column("Value", overflow="fold")
+    tools.add_row("Originated", f"{detail.tool_activity.originated:,}")
+    tools.add_row("Inherited/replayed", f"{detail.tool_activity.inherited:,}")
+    tools.add_row("Ambiguous", f"{detail.tool_activity.ambiguous:,}")
+    tools.add_row("Unknown provenance", f"{detail.tool_activity.unknown:,}")
+    tools.add_row("Failed classified results", f"{detail.tool_activity.failed_results:,}")
+    if detail.tool_activity.command_categories:
+        tools.add_row(
+            "Categories",
+            ", ".join(
+                f"{category}={count}"
+                for category, count in detail.tool_activity.command_categories
+            ),
+        )
+    console.print(tools)
+
     coverage = Table(title="Source coverage", show_header=False, box=None, pad_edge=False)
     coverage.add_column("Field", style="bold cyan", no_wrap=True)
     coverage.add_column("Value", overflow="fold")

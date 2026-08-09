@@ -10,13 +10,25 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
+from codex_insights.command_normalization import (
+    COMMAND_CLASSIFIER_VERSION,
+    classify_tool_name,
+    normalize_command,
+)
 from codex_insights.models import (
+    CommandCategory,
     EventFamily,
     NormalizedEventObservation,
     NormalizedPromptCandidate,
+    NormalizedToolCallCandidate,
+    NormalizedToolResultCandidate,
+    TestScope,
+    ToolFamily,
+    ToolResultStatus,
 )
 
 EVENT_FINGERPRINT_VERSION = "event-fingerprint-v1"
+TOOL_EXTRACTION_VERSION = "codex-tool-extraction-v1"
 
 _ID_FIELDS = ("id", "call_id", "client_id", "event_id", "turn_id")
 _VALIDATION_PATTERN = re.compile(
@@ -31,6 +43,8 @@ class ExtractedEvent:
 
     observation: NormalizedEventObservation
     prompt: NormalizedPromptCandidate | None = None
+    tool_calls: tuple[NormalizedToolCallCandidate, ...] = ()
+    tool_result: NormalizedToolResultCandidate | None = None
 
 
 def extract_event(
@@ -75,7 +89,12 @@ def extract_event(
         if family is EventFamily.USER_MESSAGE and prompt_text is not None
         else None
     )
-    return ExtractedEvent(observation=observation, prompt=prompt)
+    return ExtractedEvent(
+        observation=observation,
+        prompt=prompt,
+        tool_calls=_tool_call_candidates(payload_type, payload, source_ordinal, occurred_at),
+        tool_result=_tool_result_candidate(payload_type, payload, source_ordinal),
+    )
 
 
 def _event_family(
@@ -139,6 +158,213 @@ def _command_text(payload: Mapping[str, Any]) -> str | None:
         return None
     command = parsed.get("cmd") or parsed.get("command")
     return command.lower() if isinstance(command, str) else None
+
+
+def _tool_call_candidates(
+    payload_type: str,
+    payload: Mapping[str, Any],
+    source_ordinal: int,
+    occurred_at: datetime | None,
+) -> tuple[NormalizedToolCallCandidate, ...]:
+    if payload_type not in {"function_call", "custom_tool_call", "tool_call"}:
+        return ()
+    outer_name = _short_text(payload.get("name") or payload.get("tool_name"))
+    arguments = payload.get("arguments", payload.get("input"))
+    parsed = _decode_arguments(arguments)
+    nested_source = arguments if isinstance(arguments, str) else None
+    if outer_name in {"js", "javascript"} and isinstance(parsed, Mapping):
+        code = parsed.get("code")
+        nested_source = code if isinstance(code, str) else nested_source
+    specifications = (
+        _nested_tool_specs(nested_source)
+        if outer_name in {"exec", "js", "javascript"} and nested_source is not None
+        else ()
+    )
+    if not specifications:
+        specifications = ((outer_name or "unknown", parsed),)
+    call_id_digest = _call_id_digest(payload)
+    results: list[NormalizedToolCallCandidate] = []
+    for operation_ordinal, (name, operation_arguments) in enumerate(specifications):
+        normalized_name = _short_text(name) or "unknown"
+        command = _command_from_arguments(operation_arguments)
+        if command is not None:
+            safe = normalize_command(command)
+            category = safe.category
+            command_text = safe.text
+            command_fingerprint = safe.fingerprint
+            executable = safe.executable
+            test_scope = safe.test_scope
+            redacted = safe.redacted
+            truncated = safe.truncated
+        else:
+            category = classify_tool_name(normalized_name)
+            command_text = None
+            command_fingerprint = None
+            executable = None
+            test_scope = TestScope.NOT_APPLICABLE
+            redacted = False
+            truncated = False
+        results.append(
+            NormalizedToolCallCandidate(
+                source_ordinal=source_ordinal,
+                operation_ordinal=operation_ordinal,
+                occurred_at=occurred_at,
+                call_id_digest=call_id_digest,
+                tool_family=_normalized_tool_family(normalized_name, category),
+                tool_name=normalized_name[:128],
+                command_category=category,
+                command_text=command_text,
+                command_fingerprint=command_fingerprint,
+                executable=executable,
+                test_scope=test_scope,
+                redacted=redacted,
+                truncated=truncated,
+                extraction_version=TOOL_EXTRACTION_VERSION,
+                classifier_version=COMMAND_CLASSIFIER_VERSION,
+            )
+        )
+    return tuple(results)
+
+
+def _tool_result_candidate(
+    payload_type: str,
+    payload: Mapping[str, Any],
+    source_ordinal: int,
+) -> NormalizedToolResultCandidate | None:
+    if payload_type == "patch_apply_end":
+        success = payload.get("success")
+        status = (
+            ToolResultStatus.SUCCESS
+            if success is True
+            else ToolResultStatus.FAILURE
+            if success is False
+            else ToolResultStatus.UNKNOWN
+        )
+        return NormalizedToolResultCandidate(
+            source_ordinal=source_ordinal,
+            call_id_digest=_call_id_digest(payload),
+            status=status,
+        )
+    if payload_type not in {"function_call_output", "custom_tool_call_output"}:
+        return None
+    structured = _structured_output(payload.get("output"))
+    exit_code = _optional_int(structured.get("exit_code")) if structured else None
+    duration = _optional_float(structured.get("wall_time_seconds")) if structured else None
+    if exit_code is not None:
+        status = ToolResultStatus.SUCCESS if exit_code == 0 else ToolResultStatus.FAILURE
+    elif structured and structured.get("isError") is True:
+        status = ToolResultStatus.FAILURE
+    elif structured and structured.get("ok") is True:
+        status = ToolResultStatus.SUCCESS
+    else:
+        status = ToolResultStatus.UNKNOWN
+    return NormalizedToolResultCandidate(
+        source_ordinal=source_ordinal,
+        call_id_digest=_call_id_digest(payload),
+        status=status,
+        exit_code=exit_code,
+        duration_seconds=duration,
+    )
+
+
+def _nested_tool_specs(source: str) -> tuple[tuple[str, Any], ...]:
+    decoder = json.JSONDecoder()
+    results: list[tuple[str, Any]] = []
+    for match in re.finditer(r"tools\.([A-Za-z0-9_]+)\s*\(", source):
+        position = match.end()
+        while position < len(source) and source[position].isspace():
+            position += 1
+        try:
+            arguments, _ = decoder.raw_decode(source, position)
+        except json.JSONDecodeError:
+            arguments = None
+        results.append((match.group(1), arguments))
+    return tuple(results)
+
+
+def _decode_arguments(arguments: Any) -> Any:
+    if not isinstance(arguments, str):
+        return arguments
+    try:
+        return json.loads(arguments)
+    except json.JSONDecodeError:
+        return None
+
+
+def _command_from_arguments(arguments: Any) -> str | None:
+    if not isinstance(arguments, Mapping):
+        return None
+    command = arguments.get("cmd") or arguments.get("command")
+    return command if isinstance(command, str) else None
+
+
+def _normalized_tool_family(name: str, category: CommandCategory) -> ToolFamily:
+    lowered = name.casefold()
+    if category in {
+        CommandCategory.GIT_INSPECTION,
+        CommandCategory.GIT_MUTATION,
+        CommandCategory.TESTING,
+        CommandCategory.LINTING,
+        CommandCategory.TYPE_CHECKING,
+        CommandCategory.BUILD_PACKAGING,
+        CommandCategory.FILESYSTEM_INSPECTION,
+        CommandCategory.TEXT_SEARCH,
+        CommandCategory.PYTHON_EXECUTION,
+        CommandCategory.DEPENDENCY_MANAGEMENT,
+        CommandCategory.SCIENTIFIC_COMPUTATION,
+        CommandCategory.PROCESS_STATUS_MONITORING,
+    } or lowered in {"exec_command", "shell", "shell_command", "command"}:
+        return ToolFamily.SHELL
+    if category is CommandCategory.EDITING_PATCHING:
+        return ToolFamily.PATCH
+    if category is CommandCategory.USER_INTERACTION:
+        return ToolFamily.USER_INTERACTION
+    if lowered in {
+        "wait",
+        "wait_agent",
+        "write_stdin",
+        "spawn_agent",
+        "followup_task",
+        "list_agents",
+    }:
+        return ToolFamily.COLLABORATION
+    if lowered in {"view_image", "read_mcp_resource"}:
+        return ToolFamily.FILE
+    if lowered.startswith(("web__", "mcp__")):
+        return ToolFamily.NETWORK
+    return ToolFamily.OTHER if lowered != "unknown" else ToolFamily.UNKNOWN
+
+
+def _call_id_digest(payload: Mapping[str, Any]) -> str | None:
+    value = payload.get("call_id")
+    if not isinstance(value, (str, int)) or isinstance(value, bool):
+        return None
+    return _digest_json({"call_id": value})
+
+
+def _structured_output(value: Any) -> Mapping[str, Any] | None:
+    candidates: list[Any] = [value]
+    if isinstance(value, list):
+        candidates.extend(
+            item.get("text")
+            for item in value
+            if isinstance(item, Mapping) and isinstance(item.get("text"), str)
+        )
+    for candidate in candidates:
+        decoded = _decode_arguments(candidate)
+        if isinstance(decoded, Mapping):
+            return decoded
+    return None
+
+
+def _optional_int(value: Any) -> int | None:
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
+def _optional_float(value: Any) -> float | None:
+    if not isinstance(value, (int, float)) or isinstance(value, bool) or value < 0:
+        return None
+    return float(value)
 
 
 def _canonical_event(

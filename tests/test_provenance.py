@@ -116,6 +116,30 @@ def test_partial_command_overlap_remains_ambiguous() -> None:
     assert _statuses(result) == (EventProvenanceStatus.AMBIGUOUS,)
 
 
+def test_same_command_with_distinct_stable_call_id_is_originated() -> None:
+    parent = (
+        _event(
+            "same-command",
+            0,
+            EventFamily.SHELL_COMMAND,
+            stable_id="parent-call",
+        ),
+    )
+    child = (
+        _event(
+            "same-command",
+            0,
+            EventFamily.SHELL_COMMAND,
+            stable_id="child-call",
+        ),
+    )
+
+    result = assess_event_provenance(parent, child)
+
+    assert _statuses(result) == (EventProvenanceStatus.ORIGIN,)
+    assert result.decisions[0].evidence_type == "distinct_stable_source_id"
+
+
 def test_exact_stable_source_identity_can_resolve_one_event() -> None:
     parent = (_event("prompt", 0, stable_id="stable"),)
     child = (_event("prompt", 0, stable_id="stable"),)

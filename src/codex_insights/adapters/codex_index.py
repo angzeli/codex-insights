@@ -23,6 +23,8 @@ from codex_insights.models import (
     NormalizedSourceSession,
     NormalizedThreadRelationship,
     NormalizedTokenSnapshot,
+    NormalizedToolCallCandidate,
+    NormalizedToolResultCandidate,
     NormalizedUsage,
     ParsedSourceSession,
     SourceSessionCandidate,
@@ -30,7 +32,7 @@ from codex_insights.models import (
     UsageVector,
 )
 
-PARSER_VERSION = "codex-local-v5"
+PARSER_VERSION = "codex-local-v6"
 MAX_ROLLOUT_LINE_BYTES = 1024 * 1024
 
 _COLUMN_ALIASES: dict[str, tuple[str, ...]] = {
@@ -205,6 +207,8 @@ def parse_rollout(candidate: SourceSessionCandidate) -> ParsedSourceSession:
     token_snapshots: list[NormalizedTokenSnapshot] = []
     event_observations: list[NormalizedEventObservation] = []
     prompt_candidates: list[NormalizedPromptCandidate] = []
+    tool_call_candidates: list[NormalizedToolCallCandidate] = []
+    tool_result_candidates: list[NormalizedToolResultCandidate] = []
     family_ordinals: Counter[EventFamily] = Counter()
     malformed = 0
     oversized = 0
@@ -273,6 +277,9 @@ def parse_rollout(candidate: SourceSessionCandidate) -> ParsedSourceSession:
                 event_observations.append(extracted.observation)
                 if extracted.prompt is not None:
                     prompt_candidates.append(extracted.prompt)
+                tool_call_candidates.extend(extracted.tool_calls)
+                if extracted.tool_result is not None:
+                    tool_result_candidates.append(extracted.tool_result)
 
             category = _event_category(record, payload_map)
             if category is not None:
@@ -340,6 +347,8 @@ def parse_rollout(candidate: SourceSessionCandidate) -> ParsedSourceSession:
         token_snapshots=tuple(token_snapshots),
         event_observations=tuple(event_observations),
         prompt_candidates=tuple(prompt_candidates),
+        tool_call_candidates=tuple(tool_call_candidates),
+        tool_result_candidates=tuple(tool_result_candidates),
     )
 
 
