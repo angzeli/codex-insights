@@ -7,8 +7,9 @@ uploading a user's private working history.
 
 ## Project status
 
-This repository is at the foundation stage. The CLI can report its version and run a bounded
-environment check. It does **not** parse or index Codex sessions yet, and it has no dashboard.
+This repository is at the foundation stage. The CLI can report its version, run a bounded source
+audit, and initialize or inspect the separate normalized analytics database. Session indexing and
+analytics reports are the next implementation stage; there is no dashboard.
 
 ```text
 codex-insights --help
@@ -16,6 +17,7 @@ codex-insights version
 codex-insights doctor
 codex-insights doctor --codex-home /path/to/codex-home
 codex-insights audit-source --codex-home /path/to/codex-home
+codex-insights db-info --db /path/to/codex-insights.sqlite3
 ```
 
 Codex home resolution uses this precedence:
@@ -57,6 +59,12 @@ See [docs/data-safety.md](docs/data-safety.md) for the enforceable policy.
 Observed source concepts and unstable assumptions are tracked in
 [docs/source-format.md](docs/source-format.md).
 
+The default derived database is `~/Library/Application Support/Codex Insights/index.sqlite3` on
+macOS, `%LOCALAPPDATA%\Codex Insights\index.sqlite3` on Windows, and
+`${XDG_DATA_HOME:-~/.local/share}/codex-insights/index.sqlite3` on other platforms. `--db PATH`
+overrides it. Codex Insights rejects a database path equal to or nested beneath the selected Codex
+home.
+
 ## Development setup
 
 Python 3.11 or newer is required.
@@ -96,6 +104,8 @@ retaining raw tool stdout or stderr, while `analytics/` remains independent of t
 The initial database module enforces separation between Codex home and the analyzer index.
 
 More detail is in [docs/architecture.md](docs/architecture.md).
+The normalized tables and migration policy are documented in
+[docs/database-schema.md](docs/database-schema.md).
 
 ## License
 

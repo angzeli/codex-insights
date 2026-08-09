@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import sys
 from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import StrEnum
@@ -49,8 +50,39 @@ def resolve_codex_home(
     return CodexHomeResolution(_normalized(user_home / ".codex"), CodexHomeSource.DEFAULT)
 
 
-def default_index_path(*, home: Path | None = None) -> Path:
-    """Return a default analyzer index path outside the Codex home."""
+def default_index_path(
+    *,
+    home: Path | None = None,
+    environ: Mapping[str, str] | None = None,
+    platform_name: str | None = None,
+) -> Path:
+    """Return the platform data-directory path for the analyzer database."""
 
     user_home = Path.home() if home is None else home
-    return _normalized(user_home / ".local" / "share" / "codex-insights" / "index.sqlite3")
+    environment = os.environ if environ is None else environ
+    platform = sys.platform if platform_name is None else platform_name
+
+    if platform == "darwin":
+        data_directory = user_home / "Library" / "Application Support" / "Codex Insights"
+    elif platform == "win32":
+        configured = environment.get("LOCALAPPDATA")
+        data_directory = (
+            Path(configured) / "Codex Insights"
+            if configured
+            else user_home / "AppData" / "Local" / "Codex Insights"
+        )
+    else:
+        configured = environment.get("XDG_DATA_HOME")
+        data_directory = (
+            Path(configured) / "codex-insights"
+            if configured
+            else user_home / ".local" / "share" / "codex-insights"
+        )
+
+    return _normalized(data_directory / "index.sqlite3")
+
+
+def resolve_index_path(explicit: Path | None = None) -> Path:
+    """Resolve an explicit database path or the platform-aware default."""
+
+    return _normalized(explicit) if explicit is not None else default_index_path()

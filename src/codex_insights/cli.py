@@ -15,7 +15,8 @@ from rich.text import Text
 from codex_insights import __version__
 from codex_insights.adapters import CodexLocalAdapter, SourceAuditResult
 from codex_insights.adapters.audit_models import FieldObservation
-from codex_insights.config import resolve_codex_home
+from codex_insights.config import resolve_codex_home, resolve_index_path
+from codex_insights.db import inspect_index
 
 app = typer.Typer(
     name="codex-insights",
@@ -70,6 +71,56 @@ def doctor(
 
     if not report.codex_home_exists:
         console.print("[yellow]Codex home was not found; no session data was inspected.[/yellow]")
+
+
+@app.command("db-info")
+def db_info(
+    database: Annotated[
+        Path | None,
+        typer.Option(
+            "--db",
+            help="Codex Insights database (defaults to the platform data directory).",
+            dir_okay=False,
+        ),
+    ] = None,
+    codex_home: Annotated[
+        Path | None,
+        typer.Option(
+            "--codex-home",
+            help="Codex home used to enforce database path separation.",
+            file_okay=False,
+            dir_okay=True,
+        ),
+    ] = None,
+) -> None:
+    """Show normalized database version and aggregate source coverage."""
+
+    resolution = resolve_codex_home(codex_home)
+    info = inspect_index(resolve_index_path(database), codex_home=resolution.path)
+
+    console.print(f"[bold cyan]DB path:[/bold cyan] {info.path}", soft_wrap=True)
+    summary = Table(title="Codex Insights database", show_header=False)
+    summary.add_column("Item", style="bold cyan")
+    summary.add_column("Value", overflow="fold")
+    summary.add_row("Schema version", str(info.schema_version))
+    summary.add_row("Indexed sessions", str(info.indexed_session_count))
+    summary.add_row("Latest indexing time", info.latest_indexing_time or "never")
+    console.print(summary)
+
+    coverage = Table(title="Source coverage")
+    coverage.add_column("Source type")
+    coverage.add_column("Sessions", justify="right")
+    coverage.add_column("Codex homes", justify="right")
+    if info.source_coverage:
+        for item in info.source_coverage:
+            coverage.add_row(
+                item.source_type,
+                str(item.session_count),
+                str(item.source_home_count),
+            )
+    else:
+        coverage.add_row("none", "0", "0")
+    console.print(coverage)
 
 
 @app.command("audit-source")
