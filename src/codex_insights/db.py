@@ -7,7 +7,7 @@ from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
 
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 
 _MIGRATION_1 = """
 CREATE TABLE source_sessions (
@@ -473,6 +473,27 @@ CREATE INDEX tool_activity_call_idx
     ON tool_activity(observed_session_id, call_id_digest);
 """
 
+_MIGRATION_8 = """
+CREATE TABLE repositories (
+    id INTEGER PRIMARY KEY,
+    identity_key TEXT NOT NULL UNIQUE,
+    display_name TEXT NOT NULL,
+    identity_method TEXT NOT NULL CHECK (
+        identity_method IN ('normalized_remote', 'common_git_dir', 'repository_path')
+    ),
+    normalized_remote TEXT,
+    canonical_root TEXT,
+    common_git_dir TEXT,
+    path_exists INTEGER NOT NULL DEFAULT 0 CHECK (path_exists IN (0, 1)),
+    identity_version TEXT NOT NULL,
+    first_seen_at TEXT NOT NULL,
+    last_seen_at TEXT NOT NULL
+);
+
+ALTER TABLE source_sessions ADD COLUMN repository_id INTEGER REFERENCES repositories(id);
+CREATE INDEX source_sessions_repository_id_idx ON source_sessions(repository_id);
+"""
+
 _MIGRATIONS = {
     1: _MIGRATION_1,
     2: _MIGRATION_2,
@@ -481,6 +502,7 @@ _MIGRATIONS = {
     5: _MIGRATION_5,
     6: _MIGRATION_6,
     7: _MIGRATION_7,
+    8: _MIGRATION_8,
 }
 
 

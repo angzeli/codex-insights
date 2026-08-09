@@ -37,6 +37,11 @@ from codex_insights.provenance import (
     assess_event_provenance,
     mirrored_user_observations,
 )
+from codex_insights.repository_identity import (
+    REPOSITORY_IDENTITY_VERSION,
+    RepositoryIdentity,
+    resolve_repository_identity,
+)
 
 
 class IndexSourceAdapter(Protocol):
@@ -98,6 +103,7 @@ def index_source(
                     counts=counts,
                     parsed_sessions=parsed_sessions,
                 )
+            _reconcile_repositories(connection)
             relationships, relationship_warnings = _discover_relationships(adapter)
             warnings.extend(relationship_warnings)
             warnings.extend(
@@ -247,6 +253,98 @@ def _discover_relationships(
         discover(),
     )
     return result
+
+
+def _reconcile_repositories(connection: sqlite3.Connection) -> None:
+    """Attach sessions to stable remote/common-dir/path repository identities."""
+
+    rows = connection.execute(
+        """
+        SELECT id, repository_root, repository_name, git_origin_url,
+               COALESCE(updated_at, started_at, first_ingested_at) AS activity_time
+        FROM source_sessions
+        ORDER BY activity_time, id
+        """
+    ).fetchall()
+    session_keys: dict[int, str | None] = {}
+    identities: dict[str, RepositoryIdentity] = {}
+    for row in rows:
+        identity = resolve_repository_identity(
+            _stored_path(row["repository_root"]),
+            str(row["repository_name"]) if row["repository_name"] else None,
+            str(row["git_origin_url"]) if row["git_origin_url"] else None,
+        )
+        session_id = int(row["id"])
+        session_keys[session_id] = identity.key if identity is not None else None
+        if identity is None:
+            continue
+        previous = identities.get(identity.key)
+        if previous is None or identity.path_exists or not previous.path_exists:
+            identities[identity.key] = identity
+
+    repository_ids: dict[str, int] = {}
+    with connection:
+        for key, identity in sorted(identities.items()):
+            existing = connection.execute(
+                "SELECT id FROM repositories WHERE identity_key = ?",
+                (key,),
+            ).fetchone()
+            now = _utc_now()
+            if existing is None:
+                cursor = connection.execute(
+                    """
+                    INSERT INTO repositories(
+                        identity_key, display_name, identity_method,
+                        normalized_remote, canonical_root, common_git_dir,
+                        path_exists, identity_version, first_seen_at, last_seen_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        key,
+                        identity.display_name,
+                        identity.method,
+                        identity.normalized_remote,
+                        _format_path(identity.canonical_root),
+                        _format_path(identity.common_git_dir),
+                        int(identity.path_exists),
+                        REPOSITORY_IDENTITY_VERSION,
+                        now,
+                        now,
+                    ),
+                )
+                if cursor.lastrowid is None:
+                    raise RuntimeError("SQLite did not return a repository identifier")
+                repository_ids[key] = int(cursor.lastrowid)
+            else:
+                repository_id = int(existing["id"])
+                repository_ids[key] = repository_id
+                connection.execute(
+                    """
+                    UPDATE repositories
+                    SET display_name = ?, identity_method = ?, normalized_remote = ?,
+                        canonical_root = ?, common_git_dir = ?, path_exists = ?,
+                        identity_version = ?, last_seen_at = ?
+                    WHERE id = ?
+                    """,
+                    (
+                        identity.display_name,
+                        identity.method,
+                        identity.normalized_remote,
+                        _format_path(identity.canonical_root),
+                        _format_path(identity.common_git_dir),
+                        int(identity.path_exists),
+                        REPOSITORY_IDENTITY_VERSION,
+                        now,
+                        repository_id,
+                    ),
+                )
+        connection.executemany(
+            "UPDATE source_sessions SET repository_id = ? WHERE id = ?",
+            (
+                (repository_ids.get(key) if key is not None else None, session_id)
+                for session_id, key in sorted(session_keys.items())
+            ),
+        )
 
 
 def _reconcile_relationships(
