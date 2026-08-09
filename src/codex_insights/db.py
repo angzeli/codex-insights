@@ -7,7 +7,7 @@ from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 _MIGRATION_1 = """
 CREATE TABLE source_sessions (
@@ -143,7 +143,136 @@ FROM usage_v2;
 DROP TABLE usage_v2;
 """
 
-_MIGRATIONS = {1: _MIGRATION_1, 2: _MIGRATION_2, 3: _MIGRATION_3}
+_MIGRATION_4 = """
+CREATE TABLE thread_relationships (
+    id INTEGER PRIMARY KEY,
+    source_type TEXT NOT NULL,
+    source_home TEXT NOT NULL,
+    relationship_type TEXT NOT NULL,
+    parent_source_session_id TEXT NOT NULL,
+    child_source_session_id TEXT NOT NULL,
+    parent_session_id INTEGER REFERENCES source_sessions(id) ON DELETE SET NULL,
+    child_session_id INTEGER REFERENCES source_sessions(id) ON DELETE SET NULL,
+    source_status TEXT,
+    source_db_path TEXT,
+    last_seen_at TEXT NOT NULL,
+    UNIQUE (
+        source_type, source_home, relationship_type,
+        parent_source_session_id, child_source_session_id
+    )
+);
+
+CREATE INDEX thread_relationships_parent_idx ON thread_relationships(parent_session_id);
+CREATE UNIQUE INDEX thread_relationships_child_idx
+    ON thread_relationships(child_session_id)
+    WHERE child_session_id IS NOT NULL;
+
+CREATE TABLE token_lineage (
+    child_session_id INTEGER PRIMARY KEY REFERENCES source_sessions(id) ON DELETE CASCADE,
+    parent_session_id INTEGER NOT NULL REFERENCES source_sessions(id) ON DELETE CASCADE,
+    deduplication_status TEXT NOT NULL CHECK (
+        deduplication_status IN (
+            'inherited_exact', 'inherited_prefix', 'independent',
+            'ambiguous', 'unavailable', 'cycle'
+        )
+    ),
+    confidence TEXT NOT NULL CHECK (confidence IN ('high', 'explicit', 'none')),
+    evidence_type TEXT NOT NULL,
+    matched_snapshot_count INTEGER NOT NULL DEFAULT 0 CHECK (matched_snapshot_count >= 0),
+    parent_sequence_start INTEGER CHECK (
+        parent_sequence_start IS NULL OR parent_sequence_start >= 0
+    ),
+    baseline_input_tokens INTEGER CHECK (
+        baseline_input_tokens IS NULL OR baseline_input_tokens >= 0
+    ),
+    baseline_cached_input_tokens INTEGER CHECK (
+        baseline_cached_input_tokens IS NULL OR baseline_cached_input_tokens >= 0
+    ),
+    baseline_cache_write_input_tokens INTEGER CHECK (
+        baseline_cache_write_input_tokens IS NULL OR baseline_cache_write_input_tokens >= 0
+    ),
+    baseline_output_tokens INTEGER CHECK (
+        baseline_output_tokens IS NULL OR baseline_output_tokens >= 0
+    ),
+    baseline_reasoning_output_tokens INTEGER CHECK (
+        baseline_reasoning_output_tokens IS NULL OR baseline_reasoning_output_tokens >= 0
+    ),
+    baseline_total_tokens INTEGER CHECK (
+        baseline_total_tokens IS NULL OR baseline_total_tokens >= 0
+    ),
+    incremental_input_tokens INTEGER CHECK (
+        incremental_input_tokens IS NULL OR incremental_input_tokens >= 0
+    ),
+    incremental_cached_input_tokens INTEGER CHECK (
+        incremental_cached_input_tokens IS NULL OR incremental_cached_input_tokens >= 0
+    ),
+    incremental_cache_write_input_tokens INTEGER CHECK (
+        incremental_cache_write_input_tokens IS NULL OR incremental_cache_write_input_tokens >= 0
+    ),
+    incremental_output_tokens INTEGER CHECK (
+        incremental_output_tokens IS NULL OR incremental_output_tokens >= 0
+    ),
+    incremental_reasoning_output_tokens INTEGER CHECK (
+        incremental_reasoning_output_tokens IS NULL OR incremental_reasoning_output_tokens >= 0
+    ),
+    incremental_total_tokens INTEGER CHECK (
+        incremental_total_tokens IS NULL OR incremental_total_tokens >= 0
+    ),
+    delta_consistency TEXT NOT NULL CHECK (
+        delta_consistency IN ('exact', 'mismatch', 'unavailable')
+    ),
+    algorithm_version TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE VIEW accounted_usage AS
+SELECT u.source_session_id,
+       u.usage_semantics,
+       CASE WHEN u.usage_semantics != 'unavailable' THEN u.input_tokens END
+           AS observed_input_tokens,
+       CASE WHEN u.usage_semantics != 'unavailable' THEN u.cached_input_tokens END
+           AS observed_cached_input_tokens,
+       CASE WHEN u.usage_semantics != 'unavailable' THEN u.cache_write_input_tokens END
+           AS observed_cache_write_input_tokens,
+       CASE WHEN u.usage_semantics != 'unavailable' THEN u.output_tokens END
+           AS observed_output_tokens,
+       CASE WHEN u.usage_semantics != 'unavailable' THEN u.reasoning_output_tokens END
+           AS observed_reasoning_output_tokens,
+       CASE WHEN u.usage_semantics != 'unavailable' THEN u.total_tokens END
+           AS observed_total_tokens,
+       CASE
+           WHEN tl.deduplication_status IS NOT NULL THEN tl.deduplication_status
+           WHEN tr.child_session_id IS NOT NULL THEN 'unavailable'
+           ELSE 'root'
+       END AS accounting_status,
+       CASE WHEN u.usage_semantics = 'unavailable' THEN NULL
+            WHEN tl.deduplication_status IN ('inherited_exact', 'inherited_prefix')
+            THEN tl.incremental_input_tokens ELSE u.input_tokens END AS aggregate_input_tokens,
+       CASE WHEN u.usage_semantics = 'unavailable' THEN NULL
+            WHEN tl.deduplication_status IN ('inherited_exact', 'inherited_prefix')
+            THEN tl.incremental_cached_input_tokens ELSE u.cached_input_tokens
+       END AS aggregate_cached_input_tokens,
+       CASE WHEN u.usage_semantics = 'unavailable' THEN NULL
+            WHEN tl.deduplication_status IN ('inherited_exact', 'inherited_prefix')
+            THEN tl.incremental_cache_write_input_tokens ELSE u.cache_write_input_tokens
+       END AS aggregate_cache_write_input_tokens,
+       CASE WHEN u.usage_semantics = 'unavailable' THEN NULL
+            WHEN tl.deduplication_status IN ('inherited_exact', 'inherited_prefix')
+            THEN tl.incremental_output_tokens ELSE u.output_tokens END AS aggregate_output_tokens,
+       CASE WHEN u.usage_semantics = 'unavailable' THEN NULL
+            WHEN tl.deduplication_status IN ('inherited_exact', 'inherited_prefix')
+            THEN tl.incremental_reasoning_output_tokens ELSE u.reasoning_output_tokens
+       END AS aggregate_reasoning_output_tokens,
+       CASE WHEN u.usage_semantics = 'unavailable' THEN NULL
+            WHEN tl.deduplication_status IN ('inherited_exact', 'inherited_prefix')
+            THEN tl.incremental_total_tokens ELSE u.total_tokens END AS aggregate_total_tokens,
+       tl.baseline_total_tokens AS inherited_baseline_total_tokens
+FROM usage AS u
+LEFT JOIN thread_relationships AS tr ON tr.child_session_id = u.source_session_id
+LEFT JOIN token_lineage AS tl ON tl.child_session_id = u.source_session_id;
+"""
+
+_MIGRATIONS = {1: _MIGRATION_1, 2: _MIGRATION_2, 3: _MIGRATION_3, 4: _MIGRATION_4}
 
 
 class UnsafeDatabasePathError(ValueError):

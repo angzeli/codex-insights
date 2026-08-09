@@ -26,6 +26,33 @@ class UsageSemantics(StrEnum):
     UNAVAILABLE = "unavailable"
 
 
+class DeduplicationStatus(StrEnum):
+    """Explain how a child thread contributes to cross-thread aggregates."""
+
+    INHERITED_EXACT = "inherited_exact"
+    INHERITED_PREFIX = "inherited_prefix"
+    INDEPENDENT = "independent"
+    AMBIGUOUS = "ambiguous"
+    UNAVAILABLE = "unavailable"
+    CYCLE = "cycle"
+
+
+class DeduplicationConfidence(StrEnum):
+    """Conservative confidence attached to one lineage assessment."""
+
+    HIGH = "high"
+    EXPLICIT = "explicit"
+    NONE = "none"
+
+
+class DeltaConsistency(StrEnum):
+    """Whether post-baseline turn deltas corroborate a cumulative difference."""
+
+    EXACT = "exact"
+    MISMATCH = "mismatch"
+    UNAVAILABLE = "unavailable"
+
+
 class EventCategory(StrEnum):
     """Stable event categories that intentionally omit raw event payloads."""
 
@@ -75,6 +102,53 @@ class NormalizedUsage:
     reasoning_output_tokens: int | None = None
     total_tokens: int | None = None
     token_update_count: int = 0
+
+
+@dataclass(frozen=True, slots=True)
+class UsageVector:
+    """One content-free vector from Codex token telemetry."""
+
+    input_tokens: int | None = None
+    cached_input_tokens: int | None = None
+    cache_write_input_tokens: int | None = None
+    output_tokens: int | None = None
+    reasoning_output_tokens: int | None = None
+    total_tokens: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class NormalizedTokenSnapshot:
+    """A cumulative vector and optional same-record last-turn delta."""
+
+    cumulative: UsageVector
+    last_turn: UsageVector | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class NormalizedThreadRelationship:
+    """Explicit source relationship kept independent of source table names."""
+
+    parent_source_session_id: str
+    child_source_session_id: str
+    source_type: str
+    source_home: Path
+    relationship_type: str = "spawn"
+    source_status: str | None = None
+    source_db_path: Path | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class TokenLineageAssessment:
+    """Explainable accounting result for one explicit parent-child edge."""
+
+    status: DeduplicationStatus
+    confidence: DeduplicationConfidence
+    evidence_type: str
+    matched_snapshot_count: int = 0
+    parent_sequence_start: int | None = None
+    inherited_baseline: UsageVector | None = None
+    incremental_usage: UsageVector | None = None
+    delta_consistency: DeltaConsistency = DeltaConsistency.UNAVAILABLE
 
 
 @dataclass(frozen=True, slots=True)
@@ -134,3 +208,4 @@ class ParsedSourceSession:
     malformed_line_count: int = 0
     oversized_line_count: int = 0
     parsed_byte_count: int = 0
+    token_snapshots: tuple[NormalizedTokenSnapshot, ...] = field(default_factory=tuple)

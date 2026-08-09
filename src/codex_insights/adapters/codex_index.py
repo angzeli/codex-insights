@@ -17,13 +17,16 @@ from codex_insights.models import (
     EventCategory,
     NormalizedEventCount,
     NormalizedSourceSession,
+    NormalizedThreadRelationship,
+    NormalizedTokenSnapshot,
     NormalizedUsage,
     ParsedSourceSession,
     SourceSessionCandidate,
     UsageSemantics,
+    UsageVector,
 )
 
-PARSER_VERSION = "codex-local-v2"
+PARSER_VERSION = "codex-local-v3"
 MAX_ROLLOUT_LINE_BYTES = 1024 * 1024
 
 _COLUMN_ALIASES: dict[str, tuple[str, ...]] = {
@@ -40,6 +43,11 @@ _COLUMN_ALIASES: dict[str, tuple[str, ...]] = {
     "git_branch": ("git_branch", "branch"),
     "git_sha": ("git_sha", "git_commit", "commit_sha"),
     "git_origin_url": ("git_origin_url", "origin_url", "repository_url"),
+}
+_RELATIONSHIP_COLUMN_ALIASES: dict[str, tuple[str, ...]] = {
+    "parent": ("parent_thread_id", "parent_session_id", "parent_id"),
+    "child": ("child_thread_id", "child_session_id", "child_id"),
+    "status": ("status", "state"),
 }
 
 _STRUCTURAL_RECORD_TYPES = {
@@ -110,6 +118,74 @@ def discover_session_candidates(
     return (), tuple(warnings)
 
 
+def discover_thread_relationships(
+    codex_home: Path,
+    *,
+    source_type: str,
+) -> tuple[tuple[NormalizedThreadRelationship, ...], tuple[str, ...]]:
+    """Read explicit spawn edges without depending on one state database version."""
+
+    home = codex_home.expanduser().resolve(strict=False)
+    if not home.is_dir():
+        return (), ()
+    warnings: list[str] = []
+    for database_path in _state_database_candidates(home):
+        try:
+            with closing(open_source_sqlite_readonly(database_path)) as connection:
+                connection.row_factory = sqlite3.Row
+                table = _recognize_relationship_table(connection)
+                if table is None:
+                    continue
+                declared = {
+                    str(row[1]).lower(): str(row[1])
+                    for row in connection.execute(f"PRAGMA table_info({_quote(table)})")
+                }
+                selected = {
+                    concept: next(
+                        (declared[alias] for alias in aliases if alias in declared),
+                        "",
+                    )
+                    for concept, aliases in _RELATIONSHIP_COLUMN_ALIASES.items()
+                }
+                columns = [column for column in selected.values() if column]
+                query = ", ".join(_quote(column) for column in columns)
+                relationships: list[NormalizedThreadRelationship] = []
+                for row in connection.execute(f"SELECT {query} FROM {_quote(table)}"):
+                    parent = _short_text(row[selected["parent"]])
+                    child = _short_text(row[selected["child"]])
+                    if not parent or not child:
+                        warnings.append(
+                            f"One relationship row in {database_path.name} lacked identifiers."
+                        )
+                        continue
+                    status_column = selected["status"]
+                    relationships.append(
+                        NormalizedThreadRelationship(
+                            parent_source_session_id=parent,
+                            child_source_session_id=child,
+                            source_type=source_type,
+                            source_home=home,
+                            source_status=(
+                                _short_text(row[status_column]) if status_column else None
+                            ),
+                            source_db_path=database_path,
+                        )
+                    )
+                relationships.sort(
+                    key=lambda item: (
+                        item.parent_source_session_id,
+                        item.child_source_session_id,
+                    )
+                )
+                return tuple(relationships), tuple(warnings)
+        except (OSError, sqlite3.DatabaseError) as exc:
+            warnings.append(
+                f"Could not read thread relationships from {database_path.name}: "
+                f"{type(exc).__name__}."
+            )
+    return (), tuple(warnings)
+
+
 def parse_rollout(candidate: SourceSessionCandidate) -> ParsedSourceSession:
     """Stream one rollout into normalized metadata, usage, and event counts."""
 
@@ -122,6 +198,7 @@ def parse_rollout(candidate: SourceSessionCandidate) -> ParsedSourceSession:
     latest_cumulative: dict[str, int | None] | None = None
     summed_deltas = _empty_usage()
     token_update_count = 0
+    token_snapshots: list[NormalizedTokenSnapshot] = []
     malformed = 0
     oversized = 0
     parsed_bytes = 0
@@ -177,6 +254,12 @@ def parse_rollout(candidate: SourceSessionCandidate) -> ParsedSourceSession:
             cumulative, deltas = _usage_updates(record, payload_map)
             if cumulative is not None:
                 latest_cumulative = cumulative
+                token_snapshots.append(
+                    NormalizedTokenSnapshot(
+                        cumulative=_usage_vector(cumulative),
+                        last_turn=_usage_vector(deltas) if deltas is not None else None,
+                    )
+                )
                 token_update_count += 1
             elif deltas is not None:
                 for key, value in deltas.items():
@@ -227,6 +310,7 @@ def parse_rollout(candidate: SourceSessionCandidate) -> ParsedSourceSession:
         malformed_line_count=malformed,
         oversized_line_count=oversized,
         parsed_byte_count=parsed_bytes,
+        token_snapshots=tuple(token_snapshots),
     )
 
 
@@ -270,6 +354,22 @@ def _recognize_catalogue_table(connection: sqlite3.Connection) -> str | None:
         if best is None or candidate > best:
             best = candidate
     return best[1] if best else None
+
+
+def _recognize_relationship_table(connection: sqlite3.Connection) -> str | None:
+    for row in connection.execute(
+        "SELECT name FROM sqlite_schema WHERE type = 'table' AND name NOT LIKE 'sqlite_%'"
+    ):
+        table = str(row[0])
+        columns = {
+            str(item[1]).lower()
+            for item in connection.execute(f"PRAGMA table_info({_quote(table)})")
+        }
+        has_parent = any(alias in columns for alias in _RELATIONSHIP_COLUMN_ALIASES["parent"])
+        has_child = any(alias in columns for alias in _RELATIONSHIP_COLUMN_ALIASES["child"])
+        if has_parent and has_child:
+            return table
+    return None
 
 
 def _catalogue_rows(
@@ -453,10 +553,13 @@ def _usage_updates(
     info = payload.get("info")
     info_map = info if isinstance(info, dict) else {}
     cumulative = info_map.get("total_token_usage")
-    if isinstance(cumulative, dict):
-        return _normalized_usage_values(cumulative), None
-
     delta = info_map.get("last_token_usage")
+    if isinstance(cumulative, dict):
+        return (
+            _normalized_usage_values(cumulative),
+            _normalized_usage_values(delta) if isinstance(delta, dict) else None,
+        )
+
     if isinstance(delta, dict):
         return None, _normalized_usage_values(delta)
 
@@ -499,6 +602,17 @@ def _empty_usage() -> dict[str, int | None]:
         "reasoning_output_tokens": None,
         "total_tokens": None,
     }
+
+
+def _usage_vector(values: Mapping[str, int | None]) -> UsageVector:
+    return UsageVector(
+        input_tokens=values["input_tokens"],
+        cached_input_tokens=values["cached_input_tokens"],
+        cache_write_input_tokens=values["cache_write_input_tokens"],
+        output_tokens=values["output_tokens"],
+        reasoning_output_tokens=values["reasoning_output_tokens"],
+        total_tokens=_total_tokens(values),
+    )
 
 
 def _total_tokens(values: Mapping[str, int | None]) -> int | None:

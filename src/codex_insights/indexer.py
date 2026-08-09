@@ -7,14 +7,22 @@ from contextlib import closing
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Protocol, cast
+from typing import Any, Protocol, cast
 
 from codex_insights.db import open_index
+from codex_insights.lineage import (
+    LINEAGE_ALGORITHM_VERSION,
+    analyze_thread_topology,
+    assess_token_lineage,
+)
 from codex_insights.models import (
     NormalizedSourceSession,
+    NormalizedThreadRelationship,
     NormalizedUsage,
     ParsedSourceSession,
     SourceSessionCandidate,
+    TokenLineageAssessment,
+    UsageVector,
 )
 
 
@@ -63,6 +71,7 @@ def index_source(
     now = _utc_now()
     counts = {name: 0 for name in ("new", "updated", "unchanged", "skipped", "failed")}
     warnings: list[str] = []
+    parsed_sessions: dict[str, ParsedSourceSession] = {}
     with closing(open_index(database_path, codex_home=codex_home)) as connection:
         run_id = _start_run(connection, codex_home=codex_home, started_at=now)
         try:
@@ -74,7 +83,20 @@ def index_source(
                     adapter=adapter,
                     candidate=candidate,
                     counts=counts,
+                    parsed_sessions=parsed_sessions,
                 )
+            relationships, relationship_warnings = _discover_relationships(adapter)
+            warnings.extend(relationship_warnings)
+            warnings.extend(
+                _reconcile_relationships(
+                    connection,
+                    adapter=adapter,
+                    candidates=candidates,
+                    parsed_sessions=parsed_sessions,
+                    relationships=relationships,
+                    codex_home=codex_home,
+                )
+            )
             _finish_run(
                 connection,
                 run_id=run_id,
@@ -110,6 +132,7 @@ def _index_candidate(
     adapter: IndexSourceAdapter,
     candidate: SourceSessionCandidate,
     counts: dict[str, int],
+    parsed_sessions: dict[str, ParsedSourceSession],
 ) -> None:
     session = candidate.session
     existing = _existing_session(connection, session)
@@ -151,6 +174,7 @@ def _index_candidate(
 
     try:
         parsed = adapter.parse_session(candidate)
+        parsed_sessions[session.source_session_id] = parsed
         status = (
             "indexed_with_warnings"
             if parsed.malformed_line_count or parsed.oversized_line_count
@@ -184,6 +208,337 @@ def _index_candidate(
                 parsed_byte_offset=None,
             )
         counts["failed"] += 1
+
+
+def _discover_relationships(
+    adapter: IndexSourceAdapter,
+) -> tuple[tuple[NormalizedThreadRelationship, ...], tuple[str, ...]]:
+    discover = getattr(adapter, "discover_relationships", None)
+    if not callable(discover):
+        return (), ()
+    result = cast(
+        tuple[tuple[NormalizedThreadRelationship, ...], tuple[str, ...]],
+        discover(),
+    )
+    return result
+
+
+def _reconcile_relationships(
+    connection: sqlite3.Connection,
+    *,
+    adapter: IndexSourceAdapter,
+    candidates: tuple[SourceSessionCandidate, ...],
+    parsed_sessions: dict[str, ParsedSourceSession],
+    relationships: tuple[NormalizedThreadRelationship, ...],
+    codex_home: Path,
+) -> tuple[str, ...]:
+    """Persist explicit topology and recompute only affected child accounting."""
+
+    source_home = str(codex_home.expanduser().resolve(strict=False))
+    candidates_by_id = {
+        candidate.session.source_session_id: candidate for candidate in candidates
+    }
+    session_ids = set(candidates_by_id)
+    topology = analyze_thread_topology(session_ids, relationships)
+    warnings: list[str] = []
+    duplicate_children = {
+        child
+        for child in {item.child_source_session_id for item in relationships}
+        if sum(item.child_source_session_id == child for item in relationships) > 1
+    }
+    if duplicate_children:
+        warnings.append(
+            f"{len(duplicate_children)} child thread identifiers had multiple parents; "
+            "their token lineage remains ambiguous."
+        )
+
+    internal_ids = {
+        str(row["source_session_id"]): int(row["id"])
+        for row in connection.execute(
+            "SELECT id, source_session_id FROM source_sessions WHERE source_type = ? "
+            "AND source_home = ?",
+            (adapter.name, source_home),
+        )
+    }
+    existing_keys = {
+        (
+            str(row["parent_source_session_id"]),
+            str(row["child_source_session_id"]),
+        )
+        for row in connection.execute(
+            "SELECT parent_source_session_id, child_source_session_id "
+            "FROM thread_relationships WHERE source_type = ? AND source_home = ?",
+            (adapter.name, source_home),
+        )
+    }
+    current_keys = {
+        (item.parent_source_session_id, item.child_source_session_id)
+        for item in relationships
+    }
+
+    with connection:
+        _delete_stale_relationships(
+            connection,
+            source_type=adapter.name,
+            source_home=source_home,
+            current_keys=current_keys,
+        )
+        for relationship in relationships:
+            child_internal_id = (
+                None
+                if relationship.child_source_session_id in duplicate_children
+                else internal_ids.get(relationship.child_source_session_id)
+            )
+            _upsert_relationship(
+                connection,
+                relationship,
+                parent_session_id=internal_ids.get(relationship.parent_source_session_id),
+                child_session_id=child_internal_id,
+            )
+        connection.execute(
+            """
+            DELETE FROM token_lineage
+            WHERE child_session_id IN (
+                SELECT id FROM source_sessions WHERE source_type = ? AND source_home = ?
+            )
+              AND child_session_id NOT IN (
+                SELECT child_session_id FROM thread_relationships
+                WHERE source_type = ? AND source_home = ? AND child_session_id IS NOT NULL
+            )
+            """,
+            (adapter.name, source_home, adapter.name, source_home),
+        )
+
+    parse_cache = dict(parsed_sessions)
+    for relationship in relationships:
+        parent_id = internal_ids.get(relationship.parent_source_session_id)
+        child_id = (
+            None
+            if relationship.child_source_session_id in duplicate_children
+            else internal_ids.get(relationship.child_source_session_id)
+        )
+        if parent_id is None or child_id is None:
+            continue
+        existing = connection.execute(
+            "SELECT * FROM token_lineage WHERE child_session_id = ?",
+            (child_id,),
+        ).fetchone()
+        endpoints_changed = bool(
+            relationship.parent_source_session_id in parsed_sessions
+            or relationship.child_source_session_id in parsed_sessions
+            or (
+                relationship.parent_source_session_id,
+                relationship.child_source_session_id,
+            )
+            not in existing_keys
+        )
+        if (
+            existing is not None
+            and int(existing["parent_session_id"]) == parent_id
+            and existing["algorithm_version"] == LINEAGE_ALGORITHM_VERSION
+            and not endpoints_changed
+        ):
+            continue
+
+        cyclic = bool(
+            relationship.parent_source_session_id in topology.cycle_nodes
+            or relationship.child_source_session_id in topology.cycle_nodes
+        )
+        if cyclic:
+            assessment = assess_token_lineage((), (), cyclic=True)
+        else:
+            parent = _parse_for_lineage(
+                adapter,
+                candidates_by_id.get(relationship.parent_source_session_id),
+                parse_cache,
+            )
+            child = _parse_for_lineage(
+                adapter,
+                candidates_by_id.get(relationship.child_source_session_id),
+                parse_cache,
+            )
+            assessment = assess_token_lineage(
+                parent.token_snapshots if parent is not None else (),
+                child.token_snapshots if child is not None else (),
+            )
+        with connection:
+            _upsert_token_lineage(connection, parent_id, child_id, assessment)
+    return tuple(warnings)
+
+
+def _parse_for_lineage(
+    adapter: IndexSourceAdapter,
+    candidate: SourceSessionCandidate | None,
+    cache: dict[str, ParsedSourceSession],
+) -> ParsedSourceSession | None:
+    if candidate is None or not candidate.rollout_allowed or not candidate.rollout_exists:
+        return None
+    session_id = candidate.session.source_session_id
+    if session_id not in cache:
+        try:
+            cache[session_id] = adapter.parse_session(candidate)
+        except Exception:
+            return None
+    return cache[session_id]
+
+
+def _upsert_relationship(
+    connection: sqlite3.Connection,
+    relationship: NormalizedThreadRelationship,
+    *,
+    parent_session_id: int | None,
+    child_session_id: int | None,
+) -> None:
+    values = (
+        relationship.source_type,
+        str(relationship.source_home),
+        relationship.relationship_type,
+        relationship.parent_source_session_id,
+        relationship.child_source_session_id,
+        parent_session_id,
+        child_session_id,
+        relationship.source_status,
+        str(relationship.source_db_path) if relationship.source_db_path else None,
+    )
+    existing = connection.execute(
+        """
+        SELECT parent_session_id, child_session_id, source_status, source_db_path
+        FROM thread_relationships
+        WHERE source_type = ? AND source_home = ? AND relationship_type = ?
+          AND parent_source_session_id = ? AND child_source_session_id = ?
+        """,
+        values[:5],
+    ).fetchone()
+    comparison = values[5:]
+    if existing is not None and tuple(existing) == comparison:
+        return
+    now = _utc_now()
+    connection.execute(
+        """
+        INSERT INTO thread_relationships(
+            source_type, source_home, relationship_type,
+            parent_source_session_id, child_source_session_id,
+            parent_session_id, child_session_id, source_status, source_db_path, last_seen_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(
+            source_type, source_home, relationship_type,
+            parent_source_session_id, child_source_session_id
+        ) DO UPDATE SET
+            parent_session_id = excluded.parent_session_id,
+            child_session_id = excluded.child_session_id,
+            source_status = excluded.source_status,
+            source_db_path = excluded.source_db_path,
+            last_seen_at = excluded.last_seen_at
+        """,
+        (*values, now),
+    )
+
+
+def _delete_stale_relationships(
+    connection: sqlite3.Connection,
+    *,
+    source_type: str,
+    source_home: str,
+    current_keys: set[tuple[str, str]],
+) -> None:
+    rows = connection.execute(
+        "SELECT id, parent_source_session_id, child_source_session_id "
+        "FROM thread_relationships WHERE source_type = ? AND source_home = ?",
+        (source_type, source_home),
+    ).fetchall()
+    stale = [
+        int(row["id"])
+        for row in rows
+        if (str(row["parent_source_session_id"]), str(row["child_source_session_id"]))
+        not in current_keys
+    ]
+    connection.executemany(
+        "DELETE FROM thread_relationships WHERE id = ?",
+        ((identifier,) for identifier in stale),
+    )
+
+
+def _upsert_token_lineage(
+    connection: sqlite3.Connection,
+    parent_session_id: int,
+    child_session_id: int,
+    assessment: TokenLineageAssessment,
+) -> None:
+    baseline = assessment.inherited_baseline or UsageVector()
+    incremental = assessment.incremental_usage or UsageVector()
+    values: tuple[Any, ...] = (
+        parent_session_id,
+        assessment.status.value,
+        assessment.confidence.value,
+        assessment.evidence_type,
+        assessment.matched_snapshot_count,
+        assessment.parent_sequence_start,
+        baseline.input_tokens,
+        baseline.cached_input_tokens,
+        baseline.cache_write_input_tokens,
+        baseline.output_tokens,
+        baseline.reasoning_output_tokens,
+        baseline.total_tokens,
+        incremental.input_tokens,
+        incremental.cached_input_tokens,
+        incremental.cache_write_input_tokens,
+        incremental.output_tokens,
+        incremental.reasoning_output_tokens,
+        incremental.total_tokens,
+        assessment.delta_consistency.value,
+        LINEAGE_ALGORITHM_VERSION,
+    )
+    existing = connection.execute(
+        "SELECT parent_session_id, deduplication_status, confidence, evidence_type, "
+        "matched_snapshot_count, parent_sequence_start, baseline_input_tokens, "
+        "baseline_cached_input_tokens, baseline_cache_write_input_tokens, "
+        "baseline_output_tokens, baseline_reasoning_output_tokens, baseline_total_tokens, "
+        "incremental_input_tokens, incremental_cached_input_tokens, "
+        "incremental_cache_write_input_tokens, incremental_output_tokens, "
+        "incremental_reasoning_output_tokens, incremental_total_tokens, delta_consistency, "
+        "algorithm_version FROM token_lineage WHERE child_session_id = ?",
+        (child_session_id,),
+    ).fetchone()
+    if existing is not None and tuple(existing) == values:
+        return
+    connection.execute(
+        """
+        INSERT INTO token_lineage(
+            child_session_id, parent_session_id, deduplication_status, confidence,
+            evidence_type, matched_snapshot_count, parent_sequence_start,
+            baseline_input_tokens, baseline_cached_input_tokens,
+            baseline_cache_write_input_tokens, baseline_output_tokens,
+            baseline_reasoning_output_tokens, baseline_total_tokens,
+            incremental_input_tokens, incremental_cached_input_tokens,
+            incremental_cache_write_input_tokens, incremental_output_tokens,
+            incremental_reasoning_output_tokens, incremental_total_tokens,
+            delta_consistency, algorithm_version, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(child_session_id) DO UPDATE SET
+            parent_session_id = excluded.parent_session_id,
+            deduplication_status = excluded.deduplication_status,
+            confidence = excluded.confidence,
+            evidence_type = excluded.evidence_type,
+            matched_snapshot_count = excluded.matched_snapshot_count,
+            parent_sequence_start = excluded.parent_sequence_start,
+            baseline_input_tokens = excluded.baseline_input_tokens,
+            baseline_cached_input_tokens = excluded.baseline_cached_input_tokens,
+            baseline_cache_write_input_tokens = excluded.baseline_cache_write_input_tokens,
+            baseline_output_tokens = excluded.baseline_output_tokens,
+            baseline_reasoning_output_tokens = excluded.baseline_reasoning_output_tokens,
+            baseline_total_tokens = excluded.baseline_total_tokens,
+            incremental_input_tokens = excluded.incremental_input_tokens,
+            incremental_cached_input_tokens = excluded.incremental_cached_input_tokens,
+            incremental_cache_write_input_tokens = excluded.incremental_cache_write_input_tokens,
+            incremental_output_tokens = excluded.incremental_output_tokens,
+            incremental_reasoning_output_tokens = excluded.incremental_reasoning_output_tokens,
+            incremental_total_tokens = excluded.incremental_total_tokens,
+            delta_consistency = excluded.delta_consistency,
+            algorithm_version = excluded.algorithm_version,
+            updated_at = excluded.updated_at
+        """,
+        (child_session_id, *values, _utc_now()),
+    )
 
 
 def _start_run(

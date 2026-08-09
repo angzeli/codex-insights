@@ -9,11 +9,16 @@ from codex_insights.adapters.codex_audit import audit_codex_source
 from codex_insights.adapters.codex_index import (
     PARSER_VERSION,
     discover_session_candidates,
+    discover_thread_relationships,
     parse_rollout,
 )
 from codex_insights.config import CodexHomeResolution
 from codex_insights.discovery import CodexEnvironmentReport, inspect_codex_environment
-from codex_insights.models import ParsedSourceSession, SourceSessionCandidate
+from codex_insights.models import (
+    NormalizedThreadRelationship,
+    ParsedSourceSession,
+    SourceSessionCandidate,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -55,3 +60,10 @@ class CodexLocalAdapter:
         """Stream and normalize the rollout associated with one catalogue row."""
 
         return parse_rollout(candidate)
+
+    def discover_relationships(
+        self,
+    ) -> tuple[tuple[NormalizedThreadRelationship, ...], tuple[str, ...]]:
+        """Return explicit source thread relationships without reading transcripts."""
+
+        return discover_thread_relationships(self.resolution.path, source_type=self.name)
