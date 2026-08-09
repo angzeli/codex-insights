@@ -44,6 +44,8 @@ class TaskMetrics:
     outcomes: tuple[tuple[str, int], ...]
     classification_confidence: tuple[tuple[str, int], ...]
     logical_prompts: int
+    sessions_with_prompt_features: int
+    prompts_with_features: int
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -58,6 +60,8 @@ class TaskMetrics:
             "outcomes": dict(self.outcomes),
             "classification_confidence": dict(self.classification_confidence),
             "logical_prompts": self.logical_prompts,
+            "sessions_with_prompt_features": self.sessions_with_prompt_features,
+            "prompts_with_features": self.prompts_with_features,
             "token_semantics": "reconciled_aggregate",
             "distribution_semantics": "observed_per_rollout",
             "command_semantics": "originated_events",
@@ -74,16 +78,48 @@ class TaskGroup:
 
 
 @dataclass(frozen=True, slots=True)
+class PromptFeatureSample:
+    sample_size: int
+    outcomes: tuple[tuple[str, int], ...]
+
+    def to_dict(self) -> dict[str, object]:
+        return {"sample_size": self.sample_size, "outcomes": dict(self.outcomes)}
+
+
+@dataclass(frozen=True, slots=True)
+class PromptFeatureCorrelation:
+    feature: str
+    with_feature: PromptFeatureSample
+    without_feature: PromptFeatureSample
+    eligible: bool
+    minimum_sample_size: int = 5
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "feature": self.feature,
+            "with_feature": self.with_feature.to_dict(),
+            "without_feature": self.without_feature.to_dict(),
+            "eligible": self.eligible,
+            "minimum_sample_size": self.minimum_sample_size,
+            "interpretation": "descriptive_not_causal",
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class TaskReport:
     breakdown: TaskBreakdown
     metrics: TaskMetrics
     groups: tuple[TaskGroup, ...]
+    prompt_feature_correlations: tuple[PromptFeatureCorrelation, ...]
 
     def to_dict(self) -> dict[str, object]:
         return {
             "breakdown": self.breakdown.value,
             "metrics": self.metrics.to_dict(),
             "groups": [group.to_dict() for group in self.groups],
+            "prompt_feature_correlations": [
+                comparison.to_dict() for comparison in self.prompt_feature_correlations
+            ],
         }
 
 
@@ -112,7 +148,12 @@ def get_task_report(
             key=lambda item: (-len(item[1]), item[0]),
         )
     )
-    return TaskReport(breakdown=breakdown, metrics=_metrics(rows), groups=groups)
+    return TaskReport(
+        breakdown=breakdown,
+        metrics=_metrics(rows),
+        groups=groups,
+        prompt_feature_correlations=_prompt_feature_correlations(rows),
+    )
 
 
 def _query(filters: TaskFilters) -> tuple[str, tuple[object, ...]]:
@@ -165,6 +206,21 @@ def _query(filters: TaskFilters) -> tuple[str, tuple[object, ...]]:
         prompt_counts AS (
             SELECT origin_session_id AS session_id, COUNT(*) AS prompt_count
             FROM prompts GROUP BY origin_session_id
+        ),
+        prompt_feature_summary AS (
+            SELECT prompts.origin_session_id AS session_id,
+                   COUNT(features.prompt_id) AS feature_prompt_count,
+                   MAX(features.structured_heading_count > 0) AS structured_headings,
+                   MAX(features.has_acceptance_criteria) AS acceptance_criteria,
+                   MAX(features.requests_validation) AS validation_request,
+                   MAX(features.path_reference_count > 0) AS path_references,
+                   MAX(features.requests_commit) AS commit_request,
+                   MAX(features.requests_multiple_commits) AS multiple_commit_request,
+                   MAX(features.has_explicit_non_goals) AS explicit_non_goals,
+                   MAX(features.has_read_only_constraint) AS read_only_constraint
+            FROM prompts
+            JOIN prompt_features AS features ON features.prompt_id = prompts.id
+            GROUP BY prompts.origin_session_id
         )
         SELECT sessions.id, sessions.started_at,
                COALESCE(tasks.action, 'unknown') AS action,
@@ -174,6 +230,15 @@ def _query(filters: TaskFilters) -> tuple[str, tuple[object, ...]]:
                COALESCE(commands.command_count, 0) AS command_count,
                COALESCE(commits.commit_count, 0) AS commit_count,
                COALESCE(prompts.prompt_count, 0) AS prompt_count,
+               COALESCE(features.feature_prompt_count, 0) AS feature_prompt_count,
+               COALESCE(features.structured_headings, 0) AS structured_headings,
+               COALESCE(features.acceptance_criteria, 0) AS acceptance_criteria,
+               COALESCE(features.validation_request, 0) AS validation_request,
+               COALESCE(features.path_references, 0) AS path_references,
+               COALESCE(features.commit_request, 0) AS commit_request,
+               COALESCE(features.multiple_commit_request, 0) AS multiple_commit_request,
+               COALESCE(features.explicit_non_goals, 0) AS explicit_non_goals,
+               COALESCE(features.read_only_constraint, 0) AS read_only_constraint,
                COALESCE(outcomes.outcome, 'unknown') AS outcome
         FROM source_sessions AS sessions
         LEFT JOIN repositories AS repositories ON repositories.id = sessions.repository_id
@@ -182,6 +247,7 @@ def _query(filters: TaskFilters) -> tuple[str, tuple[object, ...]]:
         LEFT JOIN originated_commands AS commands ON commands.session_id = sessions.id
         LEFT JOIN confirmed_commits AS commits ON commits.session_id = sessions.id
         LEFT JOIN prompt_counts AS prompts ON prompts.session_id = sessions.id
+        LEFT JOIN prompt_feature_summary AS features ON features.session_id = sessions.id
         LEFT JOIN session_outcomes AS outcomes ON outcomes.session_id = sessions.id
         {where}
         ORDER BY sessions.started_at IS NULL, sessions.started_at, sessions.id
@@ -215,7 +281,54 @@ def _metrics(rows: list[sqlite3.Row]) -> TaskMetrics:
             sorted(Counter(str(row["task_confidence"]) for row in rows).items())
         ),
         logical_prompts=sum(int(row["prompt_count"]) for row in rows),
+        sessions_with_prompt_features=sum(
+            int(row["feature_prompt_count"]) > 0 for row in rows
+        ),
+        prompts_with_features=sum(int(row["feature_prompt_count"]) for row in rows),
     )
+
+
+def _prompt_feature_correlations(
+    rows: list[sqlite3.Row],
+) -> tuple[PromptFeatureCorrelation, ...]:
+    features = (
+        ("structured_headings", "structured_headings"),
+        ("acceptance_criteria", "acceptance_criteria"),
+        ("validation_request", "validation_request"),
+        ("path_references", "path_references"),
+        ("commit_request", "commit_request"),
+        ("multiple_commit_request", "multiple_commit_request"),
+        ("explicit_non_goals", "explicit_non_goals"),
+        ("read_only_constraint", "read_only_constraint"),
+    )
+    eligible_rows = [row for row in rows if int(row["feature_prompt_count"]) > 0]
+    comparisons: list[PromptFeatureCorrelation] = []
+    for label, column in features:
+        present = [row for row in eligible_rows if int(row[column]) == 1]
+        absent = [row for row in eligible_rows if int(row[column]) == 0]
+        eligible = len(present) >= 5 and len(absent) >= 5
+        comparisons.append(
+            PromptFeatureCorrelation(
+                feature=label,
+                with_feature=_feature_sample(present, expose=eligible),
+                without_feature=_feature_sample(absent, expose=eligible),
+                eligible=eligible,
+            )
+        )
+    return tuple(comparisons)
+
+
+def _feature_sample(
+    rows: list[sqlite3.Row],
+    *,
+    expose: bool,
+) -> PromptFeatureSample:
+    outcomes = (
+        tuple(sorted(Counter(str(row["outcome"]) for row in rows).items()))
+        if expose
+        else ()
+    )
+    return PromptFeatureSample(sample_size=len(rows), outcomes=outcomes)
 
 
 def _percentile(values: list[int], quantile: float) -> float | None:

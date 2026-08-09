@@ -7,7 +7,7 @@ from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
 
-SCHEMA_VERSION = 11
+SCHEMA_VERSION = 12
 
 _MIGRATION_1 = """
 CREATE TABLE source_sessions (
@@ -571,6 +571,31 @@ CREATE INDEX session_tasks_action_idx ON session_tasks(action, confidence);
 CREATE INDEX session_tasks_domain_idx ON session_tasks(domain, confidence);
 """
 
+_MIGRATION_12 = """
+CREATE TABLE prompt_features (
+    prompt_id INTEGER PRIMARY KEY REFERENCES prompts(id) ON DELETE CASCADE,
+    character_length INTEGER NOT NULL CHECK (character_length >= 0),
+    stored_character_length INTEGER NOT NULL CHECK (stored_character_length >= 0),
+    line_count INTEGER NOT NULL CHECK (line_count >= 0),
+    structured_heading_count INTEGER NOT NULL CHECK (structured_heading_count >= 0),
+    has_acceptance_criteria INTEGER NOT NULL CHECK (has_acceptance_criteria IN (0, 1)),
+    requests_validation INTEGER NOT NULL CHECK (requests_validation IN (0, 1)),
+    path_reference_count INTEGER NOT NULL CHECK (path_reference_count >= 0),
+    requests_commit INTEGER NOT NULL CHECK (requests_commit IN (0, 1)),
+    requests_multiple_commits INTEGER NOT NULL CHECK (requests_multiple_commits IN (0, 1)),
+    has_explicit_non_goals INTEGER NOT NULL CHECK (has_explicit_non_goals IN (0, 1)),
+    has_read_only_constraint INTEGER NOT NULL CHECK (has_read_only_constraint IN (0, 1)),
+    approximate_requirement_count INTEGER NOT NULL
+        CHECK (approximate_requirement_count >= 0),
+    source_truncated INTEGER NOT NULL CHECK (source_truncated IN (0, 1)),
+    feature_version TEXT NOT NULL,
+    requirement_heuristic_version TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX prompt_features_validation_idx ON prompt_features(requests_validation);
+CREATE INDEX prompt_features_commit_idx ON prompt_features(requests_commit);
+"""
+
 _MIGRATIONS = {
     1: _MIGRATION_1,
     2: _MIGRATION_2,
@@ -583,6 +608,7 @@ _MIGRATIONS = {
     9: _MIGRATION_9,
     10: _MIGRATION_10,
     11: _MIGRATION_11,
+    12: _MIGRATION_12,
 }
 
 

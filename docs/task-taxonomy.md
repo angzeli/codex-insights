@@ -51,3 +51,20 @@ and `unknown` classifications are retained rather than converted to zero or drop
 The rules are a maintainable approximation of user intent, not an objective ground truth. Aggregate
 comparisons must show sample size, retain `unknown`, and avoid causal claims about prompt wording or
 task success.
+
+## Prompt features
+
+`prompt_features` contains versioned descriptors computed from the redacted, bounded logical prompt:
+original and stored character counts, stored line count, structured-heading count, acceptance-criteria
+presence, validation request, path-reference count, commit and multiple-commit requests, explicit
+non-goals, read-only constraints, and an approximate requirement count. It also records whether the
+safe source text was truncated. No raw source text is copied into this table.
+
+The requirement heuristic counts explicit list, numbered, and requirement-like lines. A non-empty
+unstructured prompt has an approximate count of one. This deliberately simple heuristic is labeled
+`approx-requirements-v1`; it is neither exact natural-language parsing nor a quality score.
+
+Outcome comparisons for prompt features are descriptive only. Both the feature-present and
+feature-absent populations must contain at least five sessions before outcome distributions are
+shown. Sample sizes and `unknown` outcomes remain visible; insufficient samples emit no outcome
+composition. These comparisons cannot establish that a prompt feature caused an outcome.

@@ -12,6 +12,7 @@ from rich.table import Table
 
 from codex_insights.analytics.queries import TimeExpressionError, parse_time_range
 from codex_insights.analytics.tasks import (
+    PromptFeatureSample,
     TaskBreakdown,
     TaskFilters,
     TaskMetrics,
@@ -89,6 +90,27 @@ def tasks_command(
                 f"{metrics.high_confidence_commits:,}",
             )
         console.print(table)
+    eligible = [
+        comparison
+        for comparison in report.prompt_feature_correlations
+        if comparison.eligible
+    ]
+    if eligible:
+        table = Table(
+            title="Prompt-pattern outcome distributions (descriptive, not causal)",
+            box=None,
+            pad_edge=False,
+        )
+        table.add_column("Feature")
+        table.add_column("With feature")
+        table.add_column("Without feature")
+        for comparison in eligible:
+            table.add_row(
+                comparison.feature,
+                _outcome_sample(comparison.with_feature),
+                _outcome_sample(comparison.without_feature),
+            )
+        console.print(table)
 
 
 def _render_metrics(title: str, metrics: TaskMetrics) -> None:
@@ -104,6 +126,10 @@ def _render_metrics(title: str, metrics: TaskMetrics) -> None:
     table.add_row("Observed P90/session", _number(metrics.observed_p90_tokens))
     table.add_row("Originated commands", f"{metrics.originated_commands:,}")
     table.add_row("Logical prompts", f"{metrics.logical_prompts:,}")
+    table.add_row(
+        "Prompt-feature coverage",
+        f"{metrics.sessions_with_prompt_features}/{metrics.session_count} sessions",
+    )
     table.add_row("UNKNOWN tasks", f"{metrics.unknown_task_count:,}")
     console.print(table)
 
@@ -114,3 +140,8 @@ def _count(value: int | None) -> str:
 
 def _number(value: float | None) -> str:
     return f"{value:,.0f}" if value is not None else "unknown"
+
+
+def _outcome_sample(sample: PromptFeatureSample) -> str:
+    outcomes = ", ".join(f"{key}={value}" for key, value in sample.outcomes)
+    return f"n={sample.sample_size}: {outcomes}"

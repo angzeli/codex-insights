@@ -33,6 +33,7 @@ from codex_insights.models import (
 )
 from codex_insights.outcomes import reconcile_session_outcomes
 from codex_insights.privacy import PROMPT_CONTENT_SCHEMA_VERSION, redact_prompt
+from codex_insights.prompt_features import reconcile_prompt_features
 from codex_insights.provenance import (
     PROVENANCE_ALGORITHM_VERSION,
     EventFamilyAssessment,
@@ -133,6 +134,7 @@ def index_source(
                 codex_home=codex_home,
                 parsed_sessions=parsed_sessions,
             )
+            reconcile_prompt_features(connection)
             reconcile_task_taxonomy(connection)
             _finish_run(
                 connection,
