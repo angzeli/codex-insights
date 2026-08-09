@@ -9,7 +9,7 @@ from pathlib import Path
 from typer.testing import CliRunner
 
 from codex_insights.adapters import CodexLocalAdapter
-from codex_insights.analytics.git import get_commit_report, list_session_commits
+from codex_insights.analytics.git import GitFilters, get_commit_report, list_session_commits
 from codex_insights.cli import app
 from codex_insights.config import resolve_codex_home
 from codex_insights.indexer import index_source
@@ -139,11 +139,19 @@ def test_two_concurrent_sessions_keep_timing_only_commit_candidates_low(
         codex_home=codex_home,
     )
     report = get_commit_report(database, codex_home=codex_home)
+    limited = get_commit_report(
+        database,
+        codex_home=codex_home,
+        filters=GitFilters(limit=1),
+    )
 
     assert report.high == 0
     assert report.medium == 0
     assert report.low == 2
     assert report.ambiguous == 2
+    assert limited.low == 2
+    assert limited.ambiguous == 2
+    assert len(limited.associations) == 1
 
 
 def _initialize_repository(repository: Path) -> str:

@@ -133,7 +133,7 @@ def get_commit_report(
         }
     total_tokens = sum(unique_token_values.values()) if unique_token_values else None
     return CommitReport(
-        associations=tuple(_association_item(row) for row in rows),
+        associations=tuple(_association_item(row) for row in rows[: selected.limit]),
         high=sum(row["confidence"] == "high" for row in rows),
         medium=sum(row["confidence"] == "medium" for row in rows),
         low=sum(row["confidence"] == "low" for row in rows),
@@ -258,10 +258,7 @@ def _association_query(filters: GitFilters) -> tuple[str, tuple[object, ...]]:
             conditions.append("sessions.model = ? COLLATE NOCASE")
             parameters.append(filters.model)
     where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
-    parameters.append(filters.limit)
-    return _ASSOCIATION_SELECT + f" {where} " + _ASSOCIATION_ORDER + " LIMIT ?", tuple(
-        parameters
-    )
+    return _ASSOCIATION_SELECT + f" {where} " + _ASSOCIATION_ORDER, tuple(parameters)
 
 
 def _association_item(row: sqlite3.Row) -> CommitAssociationItem:
