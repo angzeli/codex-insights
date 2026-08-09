@@ -44,6 +44,7 @@ from codex_insights.repository_identity import (
     RepositoryIdentity,
     resolve_repository_identity,
 )
+from codex_insights.taxonomy import reconcile_task_taxonomy
 
 
 class IndexSourceAdapter(Protocol):
@@ -132,6 +133,7 @@ def index_source(
                 codex_home=codex_home,
                 parsed_sessions=parsed_sessions,
             )
+            reconcile_task_taxonomy(connection)
             _finish_run(
                 connection,
                 run_id=run_id,

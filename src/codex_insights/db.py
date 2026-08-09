@@ -7,7 +7,7 @@ from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
 
-SCHEMA_VERSION = 10
+SCHEMA_VERSION = 11
 
 _MIGRATION_1 = """
 CREATE TABLE source_sessions (
@@ -544,6 +544,33 @@ CREATE TABLE session_outcomes (
 CREATE INDEX session_outcomes_result_idx ON session_outcomes(outcome, confidence);
 """
 
+_MIGRATION_11 = """
+CREATE TABLE session_tasks (
+    session_id INTEGER PRIMARY KEY REFERENCES source_sessions(id) ON DELETE CASCADE,
+    action TEXT NOT NULL CHECK (
+        action IN (
+            'implementation', 'bug_fix', 'refactor', 'code_review',
+            'repository_assessment', 'testing', 'documentation', 'ui_work',
+            'scientific_status_or_diagnosis', 'research_or_exploration',
+            'git_or_release', 'planning', 'question_answering', 'other', 'unknown'
+        )
+    ),
+    domain TEXT NOT NULL CHECK (
+        domain IN (
+            'scientific_computing', 'software_engineering', 'developer_tooling',
+            'documentation', 'data_analysis', 'ui', 'git_release', 'general', 'unknown'
+        )
+    ),
+    facets_json TEXT NOT NULL,
+    confidence TEXT NOT NULL CHECK (confidence IN ('high', 'medium', 'low')),
+    evidence_json TEXT NOT NULL,
+    taxonomy_version TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX session_tasks_action_idx ON session_tasks(action, confidence);
+CREATE INDEX session_tasks_domain_idx ON session_tasks(domain, confidence);
+"""
+
 _MIGRATIONS = {
     1: _MIGRATION_1,
     2: _MIGRATION_2,
@@ -555,6 +582,7 @@ _MIGRATIONS = {
     8: _MIGRATION_8,
     9: _MIGRATION_9,
     10: _MIGRATION_10,
+    11: _MIGRATION_11,
 }
 
 
