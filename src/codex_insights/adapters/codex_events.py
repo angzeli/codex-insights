@@ -35,6 +35,8 @@ _VALIDATION_PATTERN = re.compile(
     r"(?:^|[\s/])(pytest|ruff|mypy|tox|nox|unittest|cargo\s+test|go\s+test|npm\s+test)"
 )
 _GIT_PATTERN = re.compile(r"^\s*(?:git|gh)(?:\s|$)")
+_FULL_GIT_HASH_LINE = re.compile(r"(?im)^(?:[0-9a-f]{40}|[0-9a-f]{64})$")
+_GIT_COMMIT_SUMMARY_HASH = re.compile(r"(?m)^\[[^\]]*\s([0-9a-f]{7,64})\]")
 
 
 @dataclass(frozen=True, slots=True)
@@ -258,12 +260,25 @@ def _tool_result_candidate(
         status = ToolResultStatus.SUCCESS
     else:
         status = ToolResultStatus.UNKNOWN
+    output_text = structured.get("output") if structured else None
+    full_hashes = (
+        tuple(_FULL_GIT_HASH_LINE.findall(output_text))
+        if isinstance(output_text, str)
+        else ()
+    )
+    abbreviated = (
+        _GIT_COMMIT_SUMMARY_HASH.search(output_text)
+        if isinstance(output_text, str)
+        else None
+    )
     return NormalizedToolResultCandidate(
         source_ordinal=source_ordinal,
         call_id_digest=_call_id_digest(payload),
         status=status,
         exit_code=exit_code,
         duration_seconds=duration,
+        git_commit_hash=(full_hashes[0].casefold() if len(set(full_hashes)) == 1 else None),
+        git_commit_abbrev=(abbreviated.group(1).casefold() if abbreviated else None),
     )
 
 

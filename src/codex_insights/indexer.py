@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any, Protocol, cast
 
 from codex_insights.db import open_index
+from codex_insights.git_correlation import reconcile_git_commits
 from codex_insights.lineage import (
     LINEAGE_ALGORITHM_VERSION,
     analyze_thread_topology,
@@ -122,6 +123,7 @@ def index_source(
                 codex_home=codex_home,
                 parsed_sessions=parsed_sessions,
             )
+            warnings.extend(reconcile_git_commits(connection))
             _reconcile_prompts(
                 connection,
                 adapter=adapter,
@@ -571,11 +573,12 @@ def _reconcile_tool_activity(
                         tool_name, command_category, command_text, command_fingerprint,
                         executable, test_scope, call_id_digest,
                         output_event_observation_id, exit_code, duration_seconds,
+                        result_commit_hash, result_commit_abbrev,
                         result_status, provenance_status, redacted, truncated,
                         extraction_version, classifier_version, updated_at
                     ) VALUES (
                         ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+                        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
                     )
                     """,
                     (
@@ -596,6 +599,8 @@ def _reconcile_tool_activity(
                         output_event_id,
                         output_result.exit_code if output_result is not None else None,
                         output_result.duration_seconds if output_result is not None else None,
+                        output_result.git_commit_hash if output_result is not None else None,
+                        output_result.git_commit_abbrev if output_result is not None else None,
                         output_result.status.value if output_result is not None else "unknown",
                         str(event_row["provenance_status"]),
                         int(candidate.redacted),

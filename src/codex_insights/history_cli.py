@@ -28,6 +28,7 @@ from codex_insights.analytics import (
     list_sessions,
     parse_time_range,
 )
+from codex_insights.analytics.git import CommitAssociationItem, list_session_commits
 from codex_insights.config import resolve_codex_home, resolve_index_path
 from codex_insights.db import UnsafeDatabasePathError
 
@@ -140,15 +141,26 @@ def session_command(
     ],
     database: DatabaseOption = None,
     codex_home: CodexHomeOption = None,
+    commits: Annotated[
+        bool,
+        typer.Option("--commits", help="Include provenance-aware Git associations."),
+    ] = False,
     json_output: JsonOption = False,
 ) -> None:
     """Inspect normalized metadata for one session without transcript content."""
 
     try:
+        database_path = resolve_index_path(database)
+        source_home = resolve_codex_home(codex_home).path
         detail = get_session(
-            resolve_index_path(database),
+            database_path,
             session_id,
-            codex_home=resolve_codex_home(codex_home).path,
+            codex_home=source_home,
+        )
+        commit_rows = (
+            list_session_commits(database_path, session_id, codex_home=source_home)
+            if commits
+            else ()
         )
     except SessionNotFoundError as exc:
         raise typer.BadParameter(str(exc), param_hint="SESSION_ID") from exc
@@ -162,9 +174,14 @@ def session_command(
         raise typer.BadParameter(str(exc), param_hint="--db") from exc
 
     if json_output:
-        _emit_json(detail.to_dict())
+        payload = detail.to_dict()
+        if commits:
+            payload["commits"] = [row.to_dict() for row in commit_rows]
+        _emit_json(payload)
         return
     _render_session(detail)
+    if commits:
+        _render_session_commits(commit_rows)
 
 
 def repos_command(
@@ -374,6 +391,18 @@ def _render_repositories(rows: tuple[RepositorySummary, ...]) -> None:
             _format_count(row.total_known_tokens, unknown="unknown"),
             f"{row.sessions_with_token_data}/{row.session_count}",
         )
+    console.print(table)
+
+
+def _render_session_commits(rows: tuple[CommitAssociationItem, ...]) -> None:
+    table = Table(title="Commit associations", box=None, pad_edge=False)
+    table.add_column("Commit")
+    table.add_column("Confidence")
+    table.add_column("Evidence", overflow="fold")
+    if not rows:
+        table.add_row("none", "—", "No association evidence")
+    for row in rows:
+        table.add_row(row.commit_hash[:12], row.confidence.upper(), row.evidence_type)
     console.print(table)
 
 

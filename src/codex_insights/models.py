@@ -296,6 +296,8 @@ class NormalizedToolResultCandidate:
     status: ToolResultStatus
     exit_code: int | None = None
     duration_seconds: float | None = None
+    git_commit_hash: str | None = None
+    git_commit_abbrev: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

@@ -7,7 +7,7 @@ from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
 
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 
 _MIGRATION_1 = """
 CREATE TABLE source_sessions (
@@ -494,6 +494,38 @@ ALTER TABLE source_sessions ADD COLUMN repository_id INTEGER REFERENCES reposito
 CREATE INDEX source_sessions_repository_id_idx ON source_sessions(repository_id);
 """
 
+_MIGRATION_9 = """
+ALTER TABLE tool_activity ADD COLUMN result_commit_hash TEXT;
+ALTER TABLE tool_activity ADD COLUMN result_commit_abbrev TEXT;
+
+CREATE TABLE git_commits (
+    id INTEGER PRIMARY KEY,
+    repository_id INTEGER NOT NULL REFERENCES repositories(id) ON DELETE CASCADE,
+    commit_hash TEXT NOT NULL,
+    committed_at TEXT NOT NULL,
+    parent_count INTEGER NOT NULL CHECK (parent_count >= 0),
+    first_discovered_at TEXT NOT NULL,
+    last_discovered_at TEXT NOT NULL,
+    UNIQUE (repository_id, commit_hash)
+);
+CREATE INDEX git_commits_time_idx ON git_commits(repository_id, committed_at);
+
+CREATE TABLE session_commit_associations (
+    session_id INTEGER NOT NULL REFERENCES source_sessions(id) ON DELETE CASCADE,
+    commit_id INTEGER NOT NULL REFERENCES git_commits(id) ON DELETE CASCADE,
+    confidence TEXT NOT NULL CHECK (confidence IN ('high', 'medium', 'low')),
+    evidence_type TEXT NOT NULL,
+    evidence_origin_session_id INTEGER NOT NULL REFERENCES source_sessions(id),
+    evidence_explanation TEXT NOT NULL,
+    ambiguous INTEGER NOT NULL DEFAULT 0 CHECK (ambiguous IN (0, 1)),
+    algorithm_version TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (session_id, commit_id)
+);
+CREATE INDEX session_commit_confidence_idx
+    ON session_commit_associations(confidence, session_id);
+"""
+
 _MIGRATIONS = {
     1: _MIGRATION_1,
     2: _MIGRATION_2,
@@ -503,6 +535,7 @@ _MIGRATIONS = {
     6: _MIGRATION_6,
     7: _MIGRATION_7,
     8: _MIGRATION_8,
+    9: _MIGRATION_9,
 }
 
 
