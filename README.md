@@ -7,9 +7,10 @@ uploading a user's private working history.
 
 ## Project status
 
-This repository is at the foundation stage. The CLI can report its version, run a bounded source
-audit, and initialize or inspect the separate normalized analytics database. Session indexing and
-analytics reports are the next implementation stage; there is no dashboard.
+The first local indexing foundation is now implemented. The CLI can run a bounded source audit,
+incrementally index normalized session metadata and aggregates, and inspect the separate analytics
+database. Project/model reports, Git correlation, outcome heuristics, content search, and a
+dashboard remain future work.
 
 ```text
 codex-insights --help
@@ -17,6 +18,7 @@ codex-insights version
 codex-insights doctor
 codex-insights doctor --codex-home /path/to/codex-home
 codex-insights audit-source --codex-home /path/to/codex-home
+codex-insights index --codex-home /path/to/codex-home --db /path/to/index.sqlite3
 codex-insights db-info --db /path/to/codex-insights.sqlite3
 ```
 
@@ -53,6 +55,23 @@ codex-insights audit-source --json --sample-size 5
 
 # Per-file and redacted field-shape detail. Values remain redacted.
 codex-insights audit-source --verbose
+```
+
+`index` loads structural catalogue metadata from a discovered state database, then streams only
+the referenced rollout files that are new or changed. It stores normalized session metadata,
+cumulative token totals (or explicitly labelled summed deltas), and aggregate event counts. It
+does not retain prompts, message bodies, hidden reasoning, command arguments, patches, tool output,
+stdout/stderr, environment dumps, or raw JSONL records.
+
+```bash
+# Uses the platform-aware database default documented below.
+codex-insights index
+
+# Keep a project-specific derived database at an explicit safe path.
+codex-insights index --codex-home /path/to/codex-home --db /path/to/index.sqlite3
+
+# Show schema version, session count, latest run, and source coverage.
+codex-insights db-info --db /path/to/index.sqlite3
 ```
 
 See [docs/data-safety.md](docs/data-safety.md) for the enforceable policy.
@@ -101,7 +120,9 @@ Codex source files
 
 The `src/codex_insights/adapters/` package isolates source-format changes. Normalized models avoid
 retaining raw tool stdout or stderr, while `analytics/` remains independent of the source format.
-The initial database module enforces separation between Codex home and the analyzer index.
+The database module enforces separation between Codex home and the analyzer index. The core
+indexer consumes only the normalized adapter contract and therefore does not depend on a particular
+state database version, table name, rollout directory depth, or undocumented event name.
 
 More detail is in [docs/architecture.md](docs/architecture.md).
 The normalized tables and migration policy are documented in

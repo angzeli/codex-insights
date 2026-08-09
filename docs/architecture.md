@@ -50,6 +50,7 @@ replace `CodexLocalAdapter` without changing analytics or presentation code.
 - `models.py`: normalized, source-independent records.
 - `adapters/`: contracts and format-specific read-only source access.
 - `db.py`: source read-only connections and the separate derived index.
+- `indexer.py`: source-independent incrementality, transactional upserts, and run accounting.
 - `analytics/`: future queries and classifications over normalized data.
 - `cli.py`: user-facing commands and reports.
 
@@ -59,6 +60,11 @@ The analyzer index is derived state, never the source of truth. It should be saf
 rebuild. Schema migrations apply only to this separate index. They must never target Codex-owned
 databases. Provenance should eventually record adapter version and source identity without copying
 sensitive raw content.
+
+The initial indexer asks an adapter for normalized catalogue candidates and parses only candidates
+whose rollout size, nanosecond mtime, parser version, or recognized source-schema version changed.
+Each session is committed independently, so one failed rollout does not roll back successful
+sessions. The run log records discovered, new, updated, unchanged, skipped, and failed counts.
 
 ## Planned capability stages
 

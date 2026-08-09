@@ -101,3 +101,19 @@ Normalized timestamps are stored as ISO 8601 UTC text. When the source supplies 
 its offset in minutes can be preserved on the session for later local-time rendering. The index is
 derived and rebuildable; migrations and deletion policy apply only to this database, never to Codex
 source state.
+
+## Incremental upsert behavior
+
+`codex-insights index` creates an `index_runs` row, discovers normalized catalogue candidates
+through the adapter, and processes each session in its own transaction. A malformed JSONL line is
+counted as a structural warning and does not abort its session; an unrecoverable error rolls back
+only that session and increments the run's failed count.
+
+Size plus nanosecond mtime is the initial file-change signal. Parser-version and recognized
+source-schema-version changes also force a reparse. Unchanged files retain their usage and event
+rows byte-for-byte unless catalogue metadata changed. Reparsed sessions replace their one usage
+row and category counts transactionally, so rerunning the index cannot create duplicates.
+
+The six reported outcomes are session-candidate outcomes. A new metadata-only catalogue row whose
+rollout is missing is stored for provenance but reported as `skipped`, not `new`; consequently the
+database can contain more session catalogue rows than the `new` count from a first run.

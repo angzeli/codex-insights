@@ -47,10 +47,10 @@ def test_source_audit_discovers_synthetic_layout_read_only(
     state = result.state_databases[0]
     assert state.relative_path == "state_7.sqlite"
     assert state.likely_session_tables == ("threads",)
-    assert state.rollout_references_checked == 2
+    assert state.rollout_references_checked == 4
     assert state.missing_rollout_references == 1
     threads = next(table for table in state.tables if table.name == "threads")
-    assert threads.row_count == 2
+    assert threads.row_count == 4
     assert any(column.likely_role == "git_metadata" for column in threads.columns)
     assert threads.sampled_metadata_fields
     backfill = next(table for table in state.tables if table.name == "backfill_state")

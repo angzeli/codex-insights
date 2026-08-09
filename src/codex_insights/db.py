@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sqlite3
+from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -202,7 +203,7 @@ def inspect_index(
     """Return aggregate database metadata without exposing indexed source values."""
 
     resolved = _resolved(index_path)
-    with open_index(resolved, codex_home=codex_home) as connection:
+    with closing(open_index(resolved, codex_home=codex_home)) as connection:
         schema_version = int(
             connection.execute(
                 "SELECT COALESCE(MAX(version), 0) FROM schema_migrations"

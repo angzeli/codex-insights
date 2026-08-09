@@ -98,3 +98,18 @@ def test_db_info_cli_uses_explicit_safe_paths(tmp_path: Path) -> None:
     assert "Schema version" in result.stdout
     assert "Indexed sessions" in result.stdout
     assert "never" in result.stdout
+
+
+def test_db_info_cli_rejects_database_under_codex_home(tmp_path: Path) -> None:
+    codex_home = tmp_path / "codex-home"
+    database = codex_home / "index.sqlite3"
+
+    result = runner.invoke(
+        app,
+        ["db-info", "--codex-home", str(codex_home), "--db", str(database)],
+        env={"CODEX_HOME": "/must/not/be/used"},
+    )
+
+    assert result.exit_code == 2
+    assert "Analyzer database must be outside Codex home" in result.stderr
+    assert not database.exists()

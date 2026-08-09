@@ -137,7 +137,7 @@ closed when a source is not understood.
 
 ## Intended normalized concepts
 
-A later indexer may translate recognized source records into stable internal concepts such as:
+The indexer translates recognized source records into stable internal concepts such as:
 
 - session identity and lifecycle timestamps;
 - repository, working directory, and Git correlation;
@@ -150,3 +150,33 @@ A later indexer may translate recognized source records into stable internal con
 
 The normalized index will be derived, rebuildable state stored outside Codex home. This audit does
 not create that index and does not copy raw records.
+
+## Indexer v1 recognition and limits
+
+The first `CodexLocalAdapter` index mapping is based on the observations above. It discovers
+top-level `state_*.sqlite` or legacy `state.sqlite` files and considers newer numeric versions
+first. Within a read-only database it recognizes a catalogue table by structural column roles—an
+ID plus a rollout path, strengthened by timestamp, working-directory, model, archive, and Git
+metadata—rather than depending on the literal name `threads` or the version `state_5.sqlite`.
+
+Recognized source values are mapped inside the adapter:
+
+- catalogue timestamps, working directory, archive state, model/provider, Git metadata, and
+  rollout path become stable session fields;
+- `session_meta` may fill missing working-directory, model/provider, and Codex-version metadata;
+- `total_token_usage` becomes a `cumulative_total`; legacy usage records are summed only when no
+  cumulative total is available and are labelled `summed_event_deltas`;
+- source-specific message, token, function/custom-tool, shell, patch, failure, and unknown records
+  become aggregate event categories;
+- all other payload values are discarded after the streaming record is classified.
+
+The first parse streams the entire referenced rollout because complete per-session totals require
+the final cumulative token record. Subsequent runs skip a rollout when file size, nanosecond mtime,
+parser version, and recognized source-schema version are unchanged. A changed file is conservatively
+reparsed from byte zero; the recorded byte offset is provenance for a future append-only strategy,
+not yet a resume point. No content fingerprint is calculated.
+
+This version indexes sessions represented in a recognized catalogue. A missing, deleted, or
+out-of-home rollout is retained as metadata-only session provenance and reported as skipped; it is
+never followed outside the configured Codex home. Catalogue-free orphan rollouts are not guessed
+into synthetic session identities in this version.

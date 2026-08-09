@@ -16,7 +16,8 @@ from codex_insights import __version__
 from codex_insights.adapters import CodexLocalAdapter, SourceAuditResult
 from codex_insights.adapters.audit_models import FieldObservation
 from codex_insights.config import resolve_codex_home, resolve_index_path
-from codex_insights.db import inspect_index
+from codex_insights.db import UnsafeDatabasePathError, inspect_index
+from codex_insights.indexer import index_source
 
 app = typer.Typer(
     name="codex-insights",
@@ -96,7 +97,10 @@ def db_info(
     """Show normalized database version and aggregate source coverage."""
 
     resolution = resolve_codex_home(codex_home)
-    info = inspect_index(resolve_index_path(database), codex_home=resolution.path)
+    try:
+        info = inspect_index(resolve_index_path(database), codex_home=resolution.path)
+    except UnsafeDatabasePathError as exc:
+        raise typer.BadParameter(str(exc), param_hint="--db") from exc
 
     console.print(f"[bold cyan]DB path:[/bold cyan] {info.path}", soft_wrap=True)
     summary = Table(title="Codex Insights database", show_header=False)
@@ -121,6 +125,59 @@ def db_info(
     else:
         coverage.add_row("none", "0", "0")
     console.print(coverage)
+
+
+@app.command("index")
+def index_command(
+    codex_home: Annotated[
+        Path | None,
+        typer.Option(
+            "--codex-home",
+            help="Codex home to index read-only (overrides CODEX_HOME and ~/.codex).",
+            file_okay=False,
+            dir_okay=True,
+        ),
+    ] = None,
+    database: Annotated[
+        Path | None,
+        typer.Option(
+            "--db",
+            help="Codex Insights database (defaults to the platform data directory).",
+            dir_okay=False,
+        ),
+    ] = None,
+) -> None:
+    """Incrementally index normalized session metadata and aggregate counts."""
+
+    resolution = resolve_codex_home(codex_home)
+    database_path = resolve_index_path(database)
+    try:
+        report = index_source(
+            CodexLocalAdapter(resolution),
+            database_path,
+            codex_home=resolution.path,
+        )
+    except UnsafeDatabasePathError as exc:
+        raise typer.BadParameter(str(exc), param_hint="--db") from exc
+
+    console.print(f"[bold cyan]DB path:[/bold cyan] {report.database_path}", soft_wrap=True)
+    summary = Table(title="Codex session index")
+    summary.add_column("Discovered", justify="right")
+    summary.add_column("New", justify="right")
+    summary.add_column("Updated", justify="right")
+    summary.add_column("Unchanged", justify="right")
+    summary.add_column("Skipped", justify="right")
+    summary.add_column("Failed", justify="right")
+    summary.add_row(
+        str(report.discovered),
+        str(report.new),
+        str(report.updated),
+        str(report.unchanged),
+        str(report.skipped),
+        str(report.failed),
+    )
+    console.print(summary)
+    _render_messages("Warnings", report.warnings, "yellow")
 
 
 @app.command("audit-source")
@@ -261,9 +318,7 @@ def _render_source_audit(result: SourceAuditResult, *, verbose: bool) -> None:
     console.print(Text("Observed tool names: ", style="bold cyan"), end="")
     console.print(
         Text(
-            ", ".join(
-                f"{item.name} ({item.count})" for item in result.rollouts.tool_names
-            )
+            ", ".join(f"{item.name} ({item.count})" for item in result.rollouts.tool_names)
             or "none"
         )
     )
@@ -301,9 +356,7 @@ def _render_verbose_audit(result: SourceAuditResult) -> None:
         for observation in table.sampled_metadata_fields
     )
     observations.extend(
-        observation
-        for audit in result.rollouts.sampled_files
-        for observation in audit.text_fields
+        observation for audit in result.rollouts.sampled_files for observation in audit.text_fields
     )
     if observations:
         fields = Table(title="Redacted text-like field shapes (first 40)")

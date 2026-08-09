@@ -6,8 +6,14 @@ from dataclasses import dataclass
 
 from codex_insights.adapters.audit_models import SourceAuditResult
 from codex_insights.adapters.codex_audit import audit_codex_source
+from codex_insights.adapters.codex_index import (
+    PARSER_VERSION,
+    discover_session_candidates,
+    parse_rollout,
+)
 from codex_insights.config import CodexHomeResolution
 from codex_insights.discovery import CodexEnvironmentReport, inspect_codex_environment
+from codex_insights.models import ParsedSourceSession, SourceSessionCandidate
 
 
 @dataclass(frozen=True, slots=True)
@@ -20,6 +26,12 @@ class CodexLocalAdapter:
     def name(self) -> str:
         return "codex-local"
 
+    @property
+    def parser_version(self) -> str:
+        """Version of the source-to-normalized mapping used for incrementality."""
+
+        return PARSER_VERSION
+
     def probe(self) -> CodexEnvironmentReport:
         return inspect_codex_environment(self.resolution)
 
@@ -31,3 +43,15 @@ class CodexLocalAdapter:
             sample_size=sample_size,
             verbose=verbose,
         )
+
+    def discover_sessions(
+        self,
+    ) -> tuple[tuple[SourceSessionCandidate, ...], tuple[str, ...]]:
+        """Return normalized catalogue rows without parsing rollout contents."""
+
+        return discover_session_candidates(self.resolution.path, source_type=self.name)
+
+    def parse_session(self, candidate: SourceSessionCandidate) -> ParsedSourceSession:
+        """Stream and normalize the rollout associated with one catalogue row."""
+
+        return parse_rollout(candidate)
