@@ -212,3 +212,10 @@ tool-call families did not show universal replay. A user message can also be emi
 `response_item/message(role=user)` and `event_msg/user_message` wrappers. Event provenance
 therefore preserves observations separately from inferred origins and treats unordered or
 single-fingerprint overlap as ambiguous unless a stable source identifier corroborates it.
+
+Prompt extraction uses the normalized user-message family only after provenance reconciliation.
+It prefers the explicit `event_msg/user_message` member of an adjacent mirrored pair and accepts an
+unmirrored `response_item/message(role=user)` when no mirror exists. Developer/system roles are not
+user prompts. Structured client-source metadata identifying a subagent or guardian is treated as
+non-user-authored; unrecognized structured sources fail closed. These are adapter rules over an
+undocumented format and are versioned for controlled re-indexing.

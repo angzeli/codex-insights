@@ -101,6 +101,22 @@ erDiagram
         integer ambiguous_events
         text provenance_status
     }
+    PROMPTS {
+        integer id PK
+        text prompt_id
+        integer origin_session_id FK
+        integer origin_event_id FK
+        integer source_ordinal
+        integer prompt_ordinal
+        text text
+        text redaction_status
+    }
+    PROMPT_OBSERVATIONS {
+        integer prompt_id PK,FK
+        integer event_observation_id PK,FK
+        integer observed_session_id FK
+        text provenance_status
+    }
 
     SOURCE_SESSIONS ||--|| USAGE : has
     SOURCE_SESSIONS ||--o{ EVENT_SUMMARY : summarizes
@@ -110,6 +126,10 @@ erDiagram
     SOURCE_SESSIONS ||--o{ EVENT_OBSERVATIONS : observes
     EVENT_OBSERVATIONS ||--o{ EVENT_OBSERVATIONS : originates
     THREAD_RELATIONSHIPS ||--o{ EVENT_REPLAY_SUMMARY : summarizes
+    SOURCE_SESSIONS ||--o{ PROMPTS : originates
+    EVENT_OBSERVATIONS ||--o| PROMPTS : supplies
+    PROMPTS ||--o{ PROMPT_OBSERVATIONS : observed_as
+    EVENT_OBSERVATIONS ||--o| PROMPT_OBSERVATIONS : records
 ```
 
 ## Table contracts
@@ -149,6 +169,13 @@ event family. Neither table stores raw event bodies. A fingerprint is combined w
 lineage and sequence evidence; it is never treated as provenance proof on its own. See
 `docs/event-provenance.md` for exact and ambiguous semantics.
 
+`prompts` stores one stable logical prompt at a confidently known, interactively authored origin.
+Its text is redacted and size-bounded before insertion. `prompt_observations` links exact descendant
+replay records back to that logical prompt without copying text. The external-content `prompts_fts`
+FTS5 table indexes only `prompts.text`; triggers keep it synchronized. Prompt IDs combine source
+identity, source ordinal, event fingerprint, and content-schema version rather than autoincrement,
+timestamp, or text alone. See `docs/privacy.md`.
+
 `ingestion_state` records inexpensive file identity metadata, parser/schema versions, status, and
 the last safe byte offset. Size and nanosecond mtime are the initial incremental-change signal;
 content hashes are intentionally omitted until evidence shows they are needed.
@@ -175,6 +202,12 @@ source-schema-version changes also force a reparse. Unchanged files retain their
 rows byte-for-byte unless catalogue metadata changed. Reparsed sessions replace their one usage
 row, category counts, and compact semantic observations transactionally, so rerunning the index
 cannot create duplicates.
+
+Prompt extraction participates in the same parser-version invalidation. A reparsed origin session
+upserts deterministic prompt IDs, removes only derived prompt rows no longer present for that
+session, and then synchronizes replay observations from the provenance table. An unchanged run does
+not rewrite prompt or FTS rows. Missing source rollouts retain the previously indexed derived rows,
+matching the session index's existing retention semantics.
 
 After session upserts, the adapter discovers explicit thread relationships. Lineage is recomputed
 only for new relationships, changed endpoints, an algorithm-version change, or missing lineage.

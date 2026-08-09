@@ -15,8 +15,9 @@ Safety is therefore an architectural invariant, not an optional operating mode.
 - Never recursively dump a Codex home or all rollout files into an agent context.
 - Never run unrestricted recursive `cat`, `rg`, `grep`, or equivalents over rollout history.
 - Use bounded discovery and parse only the minimum records needed for a declared analytic purpose.
-- Do not retain tool stdout/stderr, raw command output, prompt bodies, or environment content unless
-  a separately reviewed future feature explicitly requires it.
+- Do not retain tool stdout/stderr, raw command output, assistant transcript, or environment content.
+  Searchable user prompts are allowed only through the separately reviewed origin, redaction, and
+  size policy in `docs/privacy.md`.
 - Tests must use committed synthetic fixtures or test-created temporary files, never real user
   history.
 
@@ -24,8 +25,9 @@ Safety is therefore an architectural invariant, not an optional operating mode.
 
 The preferred index stores normalized metadata and aggregates: timestamps, stable session identity,
 project or repository association, model name, token counts, coarse tool names and counts, and
-explainable classifications. Raw source records should not be copied by default. New fields require
-a purpose, a retention decision, and a sensitivity review.
+explainable classifications. Redacted user prompt text is the one reviewed searchable-content
+exception. Raw source records should not be copied. New fields require a purpose, a retention
+decision, and a sensitivity review.
 
 ## Safe discovery
 

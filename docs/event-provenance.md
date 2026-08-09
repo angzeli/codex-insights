@@ -64,9 +64,10 @@ not erased merely because both replay the same parent prefix.
 ## Persisted scope and future use
 
 The compact `event_observations` and `event_replay_summary` tables are the shared provenance
-substrate for later prompt search, command analytics, Git evidence, and outcomes. Future features
-must query origin mappings rather than reimplementing replay detection. A normalization change
-requires a new fingerprint or provenance algorithm version and a controlled re-index.
+substrate used by prompt search and reserved for later command analytics, Git evidence, and
+outcomes. Future features must query origin mappings rather than reimplementing replay detection.
+A normalization change requires a new fingerprint or provenance algorithm version and a controlled
+re-index.
 
 `codex-insights provenance` reports aggregate observations, originated/inherited/ambiguous counts,
 and affected child threads. `--session`, `--family`, and `--json` remain content-free.

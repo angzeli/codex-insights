@@ -217,7 +217,10 @@ def test_changed_rollout_refreshes_only_that_session(
         {
             "timestamp": "2026-08-09T00:04:00+08:00",
             "type": "event_msg",
-            "payload": {"type": "user_message", "message": "SYNTHETIC NEVER STORE"},
+            "payload": {
+                "type": "user_message",
+                "message": "Please use password=synthetic-secret-value",
+            },
         },
         {
             "timestamp": "2026-08-09T00:05:00+08:00",
@@ -265,7 +268,7 @@ def test_changed_rollout_refreshes_only_that_session(
             """
         ).fetchone()[0]
         assert user_messages == 1
-    assert b"SYNTHETIC NEVER STORE" not in database.read_bytes()
+    assert b"synthetic-secret-value" not in database.read_bytes()
 
 
 def test_index_cli_never_falls_back_to_real_home(
@@ -363,6 +366,8 @@ def _normalized_snapshot(database: Path) -> tuple[tuple[object, ...], ...]:
             ("token_lineage", "child_session_id"),
             ("event_observations", "observed_session_id, source_ordinal"),
             ("event_replay_summary", "relationship_id, event_family"),
+            ("prompts", "prompt_id"),
+            ("prompt_observations", "prompt_id, event_observation_id"),
         ):
             rows.extend(connection.execute(f"SELECT * FROM {table} ORDER BY {order_by}"))
         return tuple(rows)

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import sqlite3
 from contextlib import closing
 from dataclasses import dataclass, replace
@@ -27,6 +29,7 @@ from codex_insights.models import (
     TokenLineageAssessment,
     UsageVector,
 )
+from codex_insights.privacy import PROMPT_CONTENT_SCHEMA_VERSION, redact_prompt
 from codex_insights.provenance import (
     PROVENANCE_ALGORITHM_VERSION,
     EventFamilyAssessment,
@@ -105,6 +108,12 @@ def index_source(
                     relationships=relationships,
                     codex_home=codex_home,
                 )
+            )
+            _reconcile_prompts(
+                connection,
+                adapter=adapter,
+                codex_home=codex_home,
+                parsed_sessions=parsed_sessions,
             )
             _finish_run(
                 connection,
@@ -946,6 +955,275 @@ def _replace_event_replay_summary(
                 updated_at = excluded.updated_at
             """,
             (relationship_id, item.family.value, *values, _utc_now()),
+        )
+
+
+def _reconcile_prompts(
+    connection: sqlite3.Connection,
+    *,
+    adapter: IndexSourceAdapter,
+    codex_home: Path,
+    parsed_sessions: dict[str, ParsedSourceSession],
+) -> None:
+    """Persist redacted logical prompts from confidently originated user events."""
+
+    source_home = str(codex_home.expanduser().resolve(strict=False))
+    session_rows = {
+        str(row["source_session_id"]): row
+        for row in connection.execute(
+            "SELECT id, source_session_id, client_source FROM source_sessions "
+            "WHERE source_type = ? AND source_home = ?",
+            (adapter.name, source_home),
+        )
+    }
+    with connection:
+        for source_session_id, parsed in sorted(parsed_sessions.items()):
+            session_row = session_rows.get(source_session_id)
+            if session_row is None:
+                continue
+            session_id = int(session_row["id"])
+            allowed, authorship_evidence = _user_prompt_source(session_row["client_source"])
+            event_rows = {
+                int(row["source_ordinal"]): row
+                for row in _event_rows(connection, session_id)
+            }
+            desired_ids: set[str] = set()
+            prompt_ordinal = 0
+            if allowed:
+                for candidate in sorted(
+                    parsed.prompt_candidates,
+                    key=lambda item: item.source_ordinal,
+                ):
+                    event_row = event_rows.get(candidate.source_ordinal)
+                    if not _is_origin_prompt_event(event_row, session_id):
+                        continue
+                    assert event_row is not None
+                    prompt_id = _stable_prompt_id(
+                        source_type=adapter.name,
+                        source_home=source_home,
+                        source_session_id=source_session_id,
+                        source_ordinal=candidate.source_ordinal,
+                        fingerprint=candidate.fingerprint,
+                    )
+                    safe = redact_prompt(candidate.text)
+                    _upsert_prompt(
+                        connection,
+                        prompt_id=prompt_id,
+                        origin_session_id=session_id,
+                        origin_event_id=int(event_row["id"]),
+                        source_ordinal=candidate.source_ordinal,
+                        prompt_ordinal=prompt_ordinal,
+                        occurred_at=_format_datetime(candidate.occurred_at),
+                        text=safe.text,
+                        redaction_status=safe.status,
+                        redaction_count=safe.redaction_count,
+                        original_character_count=safe.original_character_count,
+                        stored_character_count=safe.stored_character_count,
+                        authorship_evidence=authorship_evidence,
+                        fingerprint=candidate.fingerprint,
+                    )
+                    desired_ids.add(prompt_id)
+                    prompt_ordinal += 1
+            _delete_stale_prompts(connection, session_id, desired_ids)
+        _sync_prompt_observations(connection)
+
+
+def _is_origin_prompt_event(row: sqlite3.Row | None, session_id: int) -> bool:
+    return bool(
+        row is not None
+        and row["event_family"] == EventFamily.USER_MESSAGE.value
+        and row["provenance_status"] == EventProvenanceStatus.ORIGIN.value
+        and row["origin_session_id"] == session_id
+        and row["origin_event_id"] == row["id"]
+    )
+
+
+def _user_prompt_source(value: object) -> tuple[bool, str]:
+    if not isinstance(value, str) or not value.strip():
+        return False, "source_authorship_unknown"
+    source = value.strip()
+    lowered = source.lower()
+    if "guardian" in lowered:
+        return False, "source_identifies_guardian"
+    if "subagent" in lowered or "thread_spawn" in lowered:
+        return False, "source_identifies_subagent"
+    if source.startswith("{"):
+        try:
+            decoded = json.loads(source)
+        except json.JSONDecodeError:
+            return False, "structured_source_unrecognized"
+        if isinstance(decoded, dict):
+            return False, "structured_source_not_user_authored"
+    return True, "interactive_client_source"
+
+
+def _stable_prompt_id(
+    *,
+    source_type: str,
+    source_home: str,
+    source_session_id: str,
+    source_ordinal: int,
+    fingerprint: str,
+) -> str:
+    identity = "\0".join(
+        (
+            PROMPT_CONTENT_SCHEMA_VERSION,
+            source_type,
+            source_home,
+            source_session_id,
+            str(source_ordinal),
+            fingerprint,
+        )
+    )
+    return f"prm_{hashlib.sha256(identity.encode()).hexdigest()}"
+
+
+def _upsert_prompt(
+    connection: sqlite3.Connection,
+    *,
+    prompt_id: str,
+    origin_session_id: int,
+    origin_event_id: int,
+    source_ordinal: int,
+    prompt_ordinal: int,
+    occurred_at: str | None,
+    text: str,
+    redaction_status: str,
+    redaction_count: int,
+    original_character_count: int,
+    stored_character_count: int,
+    authorship_evidence: str,
+    fingerprint: str,
+) -> None:
+    values: tuple[object, ...] = (
+        origin_session_id,
+        origin_event_id,
+        source_ordinal,
+        prompt_ordinal,
+        occurred_at,
+        text,
+        redaction_status,
+        redaction_count,
+        original_character_count,
+        stored_character_count,
+        EventProvenanceStatus.ORIGIN.value,
+        "high",
+        authorship_evidence,
+        fingerprint,
+        PROMPT_CONTENT_SCHEMA_VERSION,
+    )
+    existing = connection.execute(
+        """
+        SELECT origin_session_id, origin_event_id, source_ordinal, prompt_ordinal,
+               occurred_at, text, redaction_status, redaction_count,
+               original_character_count, stored_character_count, provenance_status,
+               provenance_confidence, user_authorship_evidence, fingerprint,
+               content_schema_version
+        FROM prompts WHERE prompt_id = ?
+        """,
+        (prompt_id,),
+    ).fetchone()
+    if existing is not None and tuple(existing) == values:
+        return
+    now = _utc_now()
+    connection.execute(
+        """
+        INSERT INTO prompts(
+            prompt_id, origin_session_id, origin_event_id, source_ordinal,
+            prompt_ordinal, occurred_at, text, redaction_status, redaction_count,
+            original_character_count, stored_character_count, provenance_status,
+            provenance_confidence, user_authorship_evidence, fingerprint,
+            content_schema_version, first_indexed_at, last_indexed_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(prompt_id) DO UPDATE SET
+            origin_session_id = excluded.origin_session_id,
+            origin_event_id = excluded.origin_event_id,
+            source_ordinal = excluded.source_ordinal,
+            prompt_ordinal = excluded.prompt_ordinal,
+            occurred_at = excluded.occurred_at,
+            text = excluded.text,
+            redaction_status = excluded.redaction_status,
+            redaction_count = excluded.redaction_count,
+            original_character_count = excluded.original_character_count,
+            stored_character_count = excluded.stored_character_count,
+            provenance_status = excluded.provenance_status,
+            provenance_confidence = excluded.provenance_confidence,
+            user_authorship_evidence = excluded.user_authorship_evidence,
+            fingerprint = excluded.fingerprint,
+            content_schema_version = excluded.content_schema_version,
+            last_indexed_at = excluded.last_indexed_at
+        """,
+        (prompt_id, *values, now, now),
+    )
+
+
+def _delete_stale_prompts(
+    connection: sqlite3.Connection,
+    origin_session_id: int,
+    desired_ids: set[str],
+) -> None:
+    rows = connection.execute(
+        "SELECT id, prompt_id FROM prompts WHERE origin_session_id = ?",
+        (origin_session_id,),
+    ).fetchall()
+    stale = [int(row["id"]) for row in rows if str(row["prompt_id"]) not in desired_ids]
+    connection.executemany("DELETE FROM prompts WHERE id = ?", ((item,) for item in stale))
+
+
+def _sync_prompt_observations(connection: sqlite3.Connection) -> None:
+    for prompt in connection.execute("SELECT id, origin_event_id FROM prompts ORDER BY id"):
+        prompt_internal_id = int(prompt["id"])
+        origin_event_id = prompt["origin_event_id"]
+        desired: dict[int, sqlite3.Row] = {}
+        if origin_event_id is not None:
+            desired = {
+                int(row["id"]): row
+                for row in connection.execute(
+                    """
+                    SELECT id, observed_session_id, source_ordinal, provenance_status, occurred_at
+                    FROM event_observations
+                    WHERE origin_event_id = ? AND event_family = 'user_message'
+                      AND provenance_status IN (
+                          'origin', 'inherited_exact', 'inherited_prefix'
+                      )
+                    """,
+                    (origin_event_id,),
+                )
+            }
+        existing = {
+            int(row["event_observation_id"])
+            for row in connection.execute(
+                "SELECT event_observation_id FROM prompt_observations WHERE prompt_id = ?",
+                (prompt_internal_id,),
+            )
+        }
+        connection.executemany(
+            "DELETE FROM prompt_observations WHERE prompt_id = ? AND event_observation_id = ?",
+            (
+                (prompt_internal_id, event_id)
+                for event_id in sorted(existing - desired.keys())
+            ),
+        )
+        now = _utc_now()
+        connection.executemany(
+            """
+            INSERT INTO prompt_observations(
+                prompt_id, event_observation_id, observed_session_id, source_ordinal,
+                provenance_status, first_observed_at
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                (
+                    prompt_internal_id,
+                    event_id,
+                    int(row["observed_session_id"]),
+                    int(row["source_ordinal"]),
+                    str(row["provenance_status"]),
+                    str(row["occurred_at"] or now),
+                )
+                for event_id, row in sorted(desired.items())
+                if event_id not in existing
+            ),
         )
 
 

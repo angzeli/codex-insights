@@ -30,7 +30,7 @@ from codex_insights.models import (
     UsageVector,
 )
 
-PARSER_VERSION = "codex-local-v4"
+PARSER_VERSION = "codex-local-v5"
 MAX_ROLLOUT_LINE_BYTES = 1024 * 1024
 
 _COLUMN_ALIASES: dict[str, tuple[str, ...]] = {

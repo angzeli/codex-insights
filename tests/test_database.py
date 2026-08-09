@@ -71,6 +71,9 @@ def test_index_schema_is_versioned_and_normalized(tmp_path: Path) -> None:
         "token_lineage",
         "event_observations",
         "event_replay_summary",
+        "prompts",
+        "prompt_observations",
+        "prompts_fts",
     } <= tables
     assert "accounted_usage" in views
 
@@ -140,6 +143,36 @@ def test_current_v01_database_migrates_to_lineage_schema_without_losing_usage(
         "event_observations",
         "event_replay_summary",
     } <= tables
+
+
+def test_event_provenance_database_migrates_to_prompt_fts(tmp_path: Path) -> None:
+    codex_home = tmp_path / "codex-home"
+    database = tmp_path / "index.sqlite3"
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            "CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)"
+        )
+        for version in (1, 2, 3, 4, 5):
+            connection.executescript(db_module._MIGRATIONS[version])
+            connection.execute(
+                "INSERT INTO schema_migrations VALUES (?, '2026-08-09T00:00:00Z')",
+                (version,),
+            )
+        connection.commit()
+
+    with open_index(database, codex_home=codex_home) as connection:
+        version = connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0]
+        objects = {
+            (str(row[0]), str(row[1]))
+            for row in connection.execute(
+                "SELECT name, type FROM sqlite_schema WHERE name LIKE 'prompt%'"
+            )
+        }
+
+    assert version == SCHEMA_VERSION
+    assert ("prompts", "table") in objects
+    assert ("prompt_observations", "table") in objects
+    assert ("prompts_fts", "table") in objects
 
 
 def test_db_info_reports_empty_database(tmp_path: Path) -> None:

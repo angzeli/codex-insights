@@ -7,7 +7,7 @@ from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 _MIGRATION_1 = """
 CREATE TABLE source_sessions (
@@ -338,12 +338,83 @@ CREATE TABLE event_replay_summary (
 );
 """
 
+_MIGRATION_6 = """
+CREATE TABLE prompts (
+    id INTEGER PRIMARY KEY,
+    prompt_id TEXT NOT NULL UNIQUE,
+    origin_session_id INTEGER NOT NULL REFERENCES source_sessions(id) ON DELETE CASCADE,
+    origin_event_id INTEGER REFERENCES event_observations(id) ON DELETE SET NULL,
+    source_ordinal INTEGER NOT NULL CHECK (source_ordinal >= 0),
+    prompt_ordinal INTEGER NOT NULL CHECK (prompt_ordinal >= 0),
+    occurred_at TEXT,
+    text TEXT NOT NULL,
+    redaction_status TEXT NOT NULL CHECK (
+        redaction_status IN ('none', 'redacted', 'truncated', 'redacted_and_truncated')
+    ),
+    redaction_count INTEGER NOT NULL DEFAULT 0 CHECK (redaction_count >= 0),
+    original_character_count INTEGER NOT NULL CHECK (original_character_count >= 0),
+    stored_character_count INTEGER NOT NULL CHECK (stored_character_count >= 0),
+    provenance_status TEXT NOT NULL CHECK (
+        provenance_status IN (
+            'origin', 'inherited_exact', 'inherited_prefix',
+            'observed_duplicate', 'ambiguous', 'unknown'
+        )
+    ),
+    provenance_confidence TEXT NOT NULL CHECK (provenance_confidence IN ('high', 'none')),
+    user_authorship_evidence TEXT NOT NULL,
+    fingerprint TEXT NOT NULL,
+    content_schema_version TEXT NOT NULL,
+    first_indexed_at TEXT NOT NULL,
+    last_indexed_at TEXT NOT NULL,
+    UNIQUE (origin_session_id, source_ordinal, content_schema_version)
+);
+
+CREATE INDEX prompts_origin_session_idx ON prompts(origin_session_id, prompt_ordinal);
+CREATE INDEX prompts_occurred_at_idx ON prompts(occurred_at);
+
+CREATE TABLE prompt_observations (
+    prompt_id INTEGER NOT NULL REFERENCES prompts(id) ON DELETE CASCADE,
+    event_observation_id INTEGER NOT NULL REFERENCES event_observations(id) ON DELETE CASCADE,
+    observed_session_id INTEGER NOT NULL REFERENCES source_sessions(id) ON DELETE CASCADE,
+    source_ordinal INTEGER NOT NULL CHECK (source_ordinal >= 0),
+    provenance_status TEXT NOT NULL CHECK (
+        provenance_status IN ('origin', 'inherited_exact', 'inherited_prefix')
+    ),
+    first_observed_at TEXT NOT NULL,
+    PRIMARY KEY (prompt_id, event_observation_id)
+);
+
+CREATE INDEX prompt_observations_session_idx
+    ON prompt_observations(observed_session_id, prompt_id);
+
+CREATE VIRTUAL TABLE prompts_fts USING fts5(
+    text,
+    content='prompts',
+    content_rowid='id',
+    tokenize='unicode61 remove_diacritics 2'
+);
+
+CREATE TRIGGER prompts_fts_after_insert AFTER INSERT ON prompts BEGIN
+    INSERT INTO prompts_fts(rowid, text) VALUES (new.id, new.text);
+END;
+
+CREATE TRIGGER prompts_fts_after_delete AFTER DELETE ON prompts BEGIN
+    INSERT INTO prompts_fts(prompts_fts, rowid, text) VALUES ('delete', old.id, old.text);
+END;
+
+CREATE TRIGGER prompts_fts_after_update AFTER UPDATE OF text ON prompts BEGIN
+    INSERT INTO prompts_fts(prompts_fts, rowid, text) VALUES ('delete', old.id, old.text);
+    INSERT INTO prompts_fts(rowid, text) VALUES (new.id, new.text);
+END;
+"""
+
 _MIGRATIONS = {
     1: _MIGRATION_1,
     2: _MIGRATION_2,
     3: _MIGRATION_3,
     4: _MIGRATION_4,
     5: _MIGRATION_5,
+    6: _MIGRATION_6,
 }
 
 
