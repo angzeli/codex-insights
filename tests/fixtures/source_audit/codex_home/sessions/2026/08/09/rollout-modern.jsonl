@@ -1,0 +1,5 @@
+{"timestamp":"2026-08-09T00:00:00Z","type":"session_meta","payload":{"id":"synthetic-modern","session_id":"synthetic-modern","cwd":"/synthetic/project-modern","source":"cli","model":"synthetic-model","title":"SYNTHETIC SECRET SESSION TITLE"}}
+{"timestamp":"2026-08-09T00:01:00Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":120,"output_tokens":30,"cached_input_tokens":10}}}}
+{"timestamp":"2026-08-09T00:02:00Z","type":"response_item","payload":{"type":"function_call","name":"exec_command","arguments":"SYNTHETIC SECRET COMMAND --password never-print"}}
+{"timestamp":"2026-08-09T00:03:00Z","type":"unknown_future_event","payload":{"future_field":"SYNTHETIC SECRET FUTURE CONTENT"}}
+{"timestamp":"broken"

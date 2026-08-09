@@ -1,0 +1,2 @@
+{"type":"session_meta","timestamp":"2024-01-01T00:00:00Z","payload":{"session_id":"synthetic-archived","cwd":"/synthetic/project-archived","model":"synthetic-model-old"}}
+{"type":"response_item","timestamp":"2024-01-01T00:01:00Z","payload":{"type":"message","content":"SYNTHETIC SECRET ARCHIVED MESSAGE"}}

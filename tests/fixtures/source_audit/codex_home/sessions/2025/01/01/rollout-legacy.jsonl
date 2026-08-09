@@ -1,0 +1,3 @@
+{"event":"session","session_id":"synthetic-legacy","cwd":"/synthetic/project-legacy","model":"synthetic-model-legacy","timestamp":1735689600000}
+{"kind":"usage","usage":{"prompt_tokens":75,"completion_tokens":25},"timestamp":1735689660000}
+{"type":"tool_call","tool_name":"legacy_shell","command":"SYNTHETIC SECRET LEGACY COMMAND","timestamp":1735689720000}

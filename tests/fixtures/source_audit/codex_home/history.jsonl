@@ -1,0 +1,4 @@
+{"session_id":"synthetic-history-a","ts":1735689600,"text":"SYNTHETIC SECRET HISTORY PROMPT ONE"}
+{"session_id":"synthetic-history-b","timestamp":"2026-08-09T00:00:00Z","prompt":"SYNTHETIC SECRET HISTORY PROMPT TWO","unknown_history_field":true}
+this is intentionally malformed JSON
+{"timestamp":"2026-08-09T01:00:00Z","text":"SYNTHETIC HISTORY WITHOUT SESSION"}

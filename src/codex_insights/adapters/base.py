@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Protocol
 
+from codex_insights.adapters.audit_models import SourceAuditResult
 from codex_insights.discovery import CodexEnvironmentReport
 
 
@@ -16,3 +17,6 @@ class SourceAdapter(Protocol):
 
     def probe(self) -> CodexEnvironmentReport:
         """Return bounded source metadata without ingesting histories."""
+
+    def audit(self, *, sample_size: int = 5, verbose: bool = False) -> SourceAuditResult:
+        """Return bounded source schema observations without raw content."""

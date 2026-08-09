@@ -15,6 +15,7 @@ codex-insights --help
 codex-insights version
 codex-insights doctor
 codex-insights doctor --codex-home /path/to/codex-home
+codex-insights audit-source --codex-home /path/to/codex-home
 ```
 
 Codex home resolution uses this precedence:
@@ -36,7 +37,25 @@ expose sensitive data and create a second copy in model context. Codex Insights 
 bounded discovery, source adapters, normalized metadata, and aggregate analytics. It must never
 recursively dump a Codex home into an agent context.
 
+`audit-source` is the first bounded source-inspection command. It discovers versioned state
+databases, counts rollout files with metadata calls, opens SQLite in read-only/query-only mode, and
+streams only a small rollout sample. It reports schemas, record types, token field names, and
+redacted text-field lengths—not prompt bodies, command arguments, or tool output.
+
+```bash
+# Human-readable aggregate audit; samples at most five rollout files by default.
+codex-insights audit-source
+
+# Machine-readable schema observations.
+codex-insights audit-source --json --sample-size 5
+
+# Per-file and redacted field-shape detail. Values remain redacted.
+codex-insights audit-source --verbose
+```
+
 See [docs/data-safety.md](docs/data-safety.md) for the enforceable policy.
+Observed source concepts and unstable assumptions are tracked in
+[docs/source-format.md](docs/source-format.md).
 
 ## Development setup
 
