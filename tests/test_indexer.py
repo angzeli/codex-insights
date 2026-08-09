@@ -361,6 +361,8 @@ def _normalized_snapshot(database: Path) -> tuple[tuple[object, ...], ...]:
             ("ingestion_state", "source_path"),
             ("thread_relationships", "id"),
             ("token_lineage", "child_session_id"),
+            ("event_observations", "observed_session_id, source_ordinal"),
+            ("event_replay_summary", "relationship_id, event_family"),
         ):
             rows.extend(connection.execute(f"SELECT * FROM {table} ORDER BY {order_by}"))
         return tuple(rows)

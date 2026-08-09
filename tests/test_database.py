@@ -69,6 +69,8 @@ def test_index_schema_is_versioned_and_normalized(tmp_path: Path) -> None:
         "schema_migrations",
         "thread_relationships",
         "token_lineage",
+        "event_observations",
+        "event_replay_summary",
     } <= tables
     assert "accounted_usage" in views
 
@@ -92,7 +94,7 @@ def test_current_v01_database_migrates_to_lineage_schema_without_losing_usage(
         connection.execute(
             "CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)"
         )
-        for version in (1, 2, 3):
+        for version in (1, 2, 3, 4):
             connection.executescript(db_module._MIGRATIONS[version])
             connection.execute(
                 "INSERT INTO schema_migrations VALUES (?, '2026-08-09T00:00:00Z')",
@@ -132,7 +134,12 @@ def test_current_v01_database_migrates_to_lineage_schema_without_losing_usage(
 
     assert version == SCHEMA_VERSION
     assert tuple(observed) == (100, 100)
-    assert {"thread_relationships", "token_lineage"} <= tables
+    assert {
+        "thread_relationships",
+        "token_lineage",
+        "event_observations",
+        "event_replay_summary",
+    } <= tables
 
 
 def test_db_info_reports_empty_database(tmp_path: Path) -> None:

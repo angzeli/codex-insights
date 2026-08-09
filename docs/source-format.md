@@ -175,7 +175,8 @@ Recognized source values are mapped inside the adapter:
   when both input and output are known;
 - source-specific message, token, function/custom-tool, shell, patch, failure, and unknown records
   become aggregate event categories;
-- all other payload values are discarded after the streaming record is classified.
+- selected non-token semantic records also become content-free fingerprint observations for
+  origin analysis; all other payload values are discarded after the streaming record is classified.
 
 Some audited state databases also expose an explicit relationship table with parent-thread ID,
 child-thread ID, and status fields. The adapter normalizes that relationship by column role rather
@@ -204,3 +205,10 @@ The cumulative-versus-delta and cross-thread interpretations are based on audite
 placement in the current undocumented format. It is an adapter rule, not a Codex API guarantee.
 The parser version changes when this interpretation changes so existing rollouts are conservatively
 reparsed into the separate analyzer index.
+
+The same bounded audit found that child rollouts can replay non-token records selectively. Exact
+ordered replay was observed for user-message, patch-result, and task-lifecycle families, while
+tool-call families did not show universal replay. A user message can also be emitted as adjacent
+`response_item/message(role=user)` and `event_msg/user_message` wrappers. Event provenance
+therefore preserves observations separately from inferred origins and treats unordered or
+single-fingerprint overlap as ambiguous unless a stable source identifier corroborates it.
