@@ -45,6 +45,25 @@ Normal pull-request CI does not enforce narrow timing thresholds and does not ru
 every Python version. A separate manual GitHub Actions workflow can run it against synthetic data
 and retain only the result JSON for 14 days.
 
+## v1 reference result
+
+The 10,000-session v1 acceptance run on Python 3.14.6/macOS produced:
+
+| Measurement | Result |
+| --- | ---: |
+| Fresh index | 47.546 s |
+| Unchanged index | 4.979 s |
+| One-session changed index | 5.022 s |
+| Slowest common query | 0.216 s |
+| HTML report | 4.740 s |
+| Static dashboard | 5.036 s |
+| Peak process memory | 262.3 MiB |
+| Derived database | 119.60 MiB |
+
+The unchanged run reported 9,953 unchanged rollouts and 47 deliberately missing synthetic rollout
+references; the changed run updated exactly one session. There were no failures. These values are a
+structural regression reference, not a hardware-independent service-level objective.
+
 ## Developer-only real smoke
 
 The optional real-history smoke is explicitly separate from tests and CI:

@@ -1,467 +1,300 @@
 # Codex Insights
 
-Codex Insights is a local-first, read-only analytics and observability workbench for Codex
-sessions. Its goal is to make patterns such as project activity, token use, model selection,
-tool frequency, Git correlation, outcomes, and efficiency trends understandable without
-uploading a user's private working history.
+Codex Insights is a local-first, read-only analytics workbench for Codex sessions. It turns
+undocumented local session state into a separate normalized SQLite index, then answers practical
+questions about activity, token usage, repositories, models, prompts, tools, Git provenance,
+outcomes, and task patterns without uploading a working history.
 
-## Project status: v0.1.0 MVP with Phase-III local analytics
+Version 1.0 is a local release candidate. It provides the complete command-line workflow, offline
+reports and dashboard, explicit privacy controls, forward-compatible source diagnostics, synthetic
+integration coverage, and guarded derived-data maintenance. It is not yet a publicly published
+release.
 
-The local-first command-line MVP is ready for daily use. It can audit an installed Codex layout,
-incrementally index normalized session metadata, explore individual sessions, report token usage,
-audit cross-thread replay, search redacted origin-aware user prompts, analyze originated commands,
-correlate Git commits, classify outcomes/tasks, and generate offline weekly or monthly reports.
-It also provides explicit text-retention controls, safe normalized exports, consistent derived-index
-backups, and a guarded reset that never deletes Codex source history.
-The static offline dashboard turns those shared metrics into a polished local analytics workbench
-without adding a server or remote assets.
+![Synthetic Codex Insights dashboard](docs/assets/dashboard-synthetic.png)
 
-```text
-codex-insights --help
-codex-insights version
-codex-insights doctor
-codex-insights doctor --deep
-codex-insights doctor --codex-home /path/to/codex-home
-codex-insights audit-source --codex-home /path/to/codex-home
-codex-insights index --codex-home /path/to/codex-home --db /path/to/index.sqlite3
-codex-insights db-info --db /path/to/codex-insights.sqlite3
-codex-insights sessions --since 7d
-codex-insights session SESSION_ID
-codex-insights repos
-codex-insights models
-codex-insights stats
-codex-insights usage --since 7d
-codex-insights usage --since 7d --by repo
-codex-insights provenance
-codex-insights prompts --since 7d
-codex-insights search '"quoted phrase"'
-codex-insights prompt PROMPT_ID
-codex-insights tools --since 7d
-codex-insights commands --repeated
-codex-insights commits --confidence high
-codex-insights outcomes --since 30d
-codex-insights tasks --by type
-codex-insights report weekly --format markdown
-codex-insights report monthly --format html --output ~/codex-month.html
-codex-insights dashboard --since 30d --output ~/codex-dashboard.html
-codex-insights privacy inspect
-codex-insights export --dataset usage --format json --output usage.json
-codex-insights backup-index ~/codex-insights-backup.sqlite3
-codex-insights reset-index --backup ~/before-reset.sqlite3
-```
+The screenshot above was generated from the repository's deterministic synthetic corpus. It does
+not contain data from a real Codex installation.
 
-## Offline dashboard
+## What it does
 
-Generate a self-contained dashboard from the normalized index:
+- discovers and audits local Codex storage with bounded, metadata-only reads;
+- incrementally indexes normalized sessions into a separate application database;
+- reconciles defensibly identified inherited token and event replay across child threads;
+- explores sessions, repositories, models, prompts, tools, commands, commits, outcomes, and tasks;
+- generates Markdown, JSON, and self-contained offline HTML reports;
+- generates a static offline dashboard with no server, JavaScript, CDN, analytics, or tracking;
+- exposes source capability, metric coverage, confidence, ambiguity, and stale-state diagnostics;
+- controls future prompt/command-text retention and safely exports, backs up, purges, or resets only
+  derived Codex Insights state.
+
+Codex Insights never claims that activity volume is productivity or that a heuristic outcome is a
+ground-truth result.
+
+## Local-first safety and privacy
+
+The configured Codex home is immutable source data. Codex Insights never writes, renames, moves,
+deletes, vacuums, migrates, or modifies files or databases under it. Source SQLite databases are
+opened read-only with query-only mode. The derived index is rejected if its resolved path overlaps
+the source home.
+
+Raw rollout histories can contain prompts, source excerpts, commands, paths, tool output, patches,
+environment details, and other private material. Feeding an entire rollout collection back into an
+agent creates unnecessary disclosure and a second copy in model context. Codex Insights instead
+uses bounded streaming parsers and stores only normalized metadata, aggregate evidence, redacted
+and capped user prompts when enabled, and redacted and capped command text when enabled.
+
+It never persists raw tool stdout/stderr, raw rollout lines, patches, environment dumps, assistant
+hidden reasoning, or arbitrary transcript content. Redaction reduces risk but cannot recognize
+every sensitive datum; protect the local index, reports, exports, and backups like other local
+development data. See [data safety](docs/data-safety.md) and [privacy](docs/privacy.md).
+
+## Install
+
+Python 3.11 or newer is required. From a checkout:
 
 ```bash
-codex-insights dashboard
-codex-insights dashboard --since 30d --repo example-project
-codex-insights dashboard --task implementation --domain software_engineering --open
+git clone https://github.com/angzeli/codex-insights.git
+cd codex-insights
+python3 -m venv venv-acceptance
+source venv-acceptance/bin/activate
+python -m pip install .
+codex-insights version
 ```
 
-The default file is `codex-insights-dashboard.html` in the current directory. Filters are applied
-during generation, so the file contains bounded aggregate data rather than a copy of the database or
-raw event history. It includes overview, activity, repository/model, tool/command, task, outcome,
-Git, interesting-session, and data-quality sections. No prompt bodies, command text, raw outputs,
-remote scripts, CDNs, analytics, or tracking are embedded. See
-[docs/dashboard.md](docs/dashboard.md).
+Codex home discovery uses this precedence:
 
-Codex home resolution uses this precedence:
-
-1. `--codex-home`
+1. `--codex-home PATH`
 2. `CODEX_HOME`
 3. `~/.codex`
 
-## First-run flow
+The default derived database is outside the Codex home:
 
-Python 3.11 or newer is required. From a local checkout:
+- macOS: `~/Library/Application Support/Codex Insights/index.sqlite3`
+- Windows: `%LOCALAPPDATA%\Codex Insights\index.sqlite3`
+- Linux/other: `${XDG_DATA_HOME:-~/.local/share}/codex-insights/index.sqlite3`
 
-1. Install Codex Insights.
+Use `--db PATH` for another safe location.
 
-   ```bash
-   python3 -m venv .venv
-   source .venv/bin/activate
-   python -m pip install .
-   ```
-
-2. Confirm the runtime and detected Codex home without reading session histories.
-
-   ```bash
-   codex-insights doctor
-   ```
-
-3. Run the bounded, metadata-only source audit.
-
-   ```bash
-   codex-insights audit-source
-   ```
-
-4. Build or incrementally refresh the separate analytics index.
-
-   ```bash
-   codex-insights index
-   ```
-
-5. Check indexed coverage and recent activity.
-
-   ```bash
-   codex-insights stats
-   ```
-
-6. Review the last seven days by normalized repository.
-
-   ```bash
-   codex-insights usage --since 7d --by repo
-   ```
-
-## Local-first and read-only
-
-Codex-owned files are source material, never application state. Codex Insights must not write,
-rename, move, delete, vacuum, migrate, or otherwise modify anything in the selected Codex home.
-Any future SQLite inspection must use explicit read-only connections. The analyzer's own SQLite
-index belongs in a separate application-data directory.
-
-Raw rollout histories can contain prompts, source excerpts, commands, file paths, tool output,
-and environment details. Feeding those histories wholesale back into an agent can unnecessarily
-expose sensitive data and create a second copy in model context. Codex Insights therefore uses
-bounded discovery, source adapters, normalized metadata, and aggregate analytics. It must never
-recursively dump a Codex home into an agent context.
-
-`audit-source` is the first bounded source-inspection command. It discovers versioned state
-databases, counts rollout files with metadata calls, opens SQLite in read-only/query-only mode, and
-streams only a small rollout sample. It reports schemas, record types, token field names, and
-redacted text-field lengths—not prompt bodies, command arguments, or tool output.
+## Five-minute quick start
 
 ```bash
-# Human-readable aggregate audit; samples at most five rollout files by default.
+# 1. Confirm runtime and detected paths without reading histories.
+codex-insights doctor
+
+# 2. Inspect source layout and schemas with a bounded metadata-only sample.
 codex-insights audit-source
 
-# Machine-readable schema observations.
-codex-insights audit-source --json --sample-size 5
-
-# Per-file and redacted field-shape detail. Values remain redacted.
-codex-insights audit-source --verbose
-```
-
-`doctor --deep` adds bounded compatibility and recovery diagnostics without re-indexing. It shows
-the selected and alternative state databases, source/parser versions, derived DB integrity,
-capability coverage, unknown-record totals, stale sessions, parse failures, and coverage warnings.
-
-```bash
-codex-insights doctor --deep
-codex-insights doctor --deep --json --db /path/to/index.sqlite3
-```
-
-`index` loads structural catalogue metadata from a discovered state database, then streams only
-the referenced rollout files that are new or changed. It stores normalized session metadata,
-cumulative token totals (or explicitly labelled summed deltas), aggregate event counts, compact
-provenance fingerprints, redacted user-authored prompt text for local search, and bounded,
-privacy-filtered command metadata. It does not retain assistant/hidden reasoning, raw command
-results, patches, tool output, stdout/stderr, environment dumps, or raw JSONL records.
-If a live rollout changes during parsing or ends in a partial line, indexing preserves the previous
-good normalized session and reports it as stale until a stable retry succeeds. Unknown source
-shapes are counted as bounded metadata, and missing capabilities remain explicit rather than zero.
-See [docs/schema-compatibility.md](docs/schema-compatibility.md).
-
-```bash
-# Uses the platform-aware database default documented below.
+# 3. Build or incrementally refresh the separate normalized index.
 codex-insights index
 
-# Keep a project-specific derived database at an explicit safe path.
-codex-insights index --codex-home /path/to/codex-home --db /path/to/index.sqlite3
+# 4. Review coverage and activity.
+codex-insights stats
+codex-insights usage --since 7d --by repo
 
-# Show schema version, session count, latest run, and source coverage.
-codex-insights db-info --db /path/to/index.sqlite3
+# 5. Generate an offline dashboard and open it explicitly.
+codex-insights dashboard --since 30d --open
 ```
 
-## Explore indexed history
+`doctor --deep` adds read-only parser/schema selection, capability coverage, stale-session, source
+drift, lineage, and derived-index integrity diagnostics. `audit-source` streams only a small sample
+of rollout files and reports field shapes and text lengths, never prompt bodies or raw tool output.
 
-History commands query only the normalized Codex Insights database. They never reopen rollout
-files or print transcript content.
+## Common workflows
+
+Explore normalized history:
 
 ```bash
-# Newest sessions first; paths are hidden in this compact view.
 codex-insights sessions --since 7d --active --limit 25
-
-# Filters can be combined. Relative durations include values such as 24h, 7d, and 30d.
-codex-insights sessions --repo my-project --model model-name --source cli
-
-# A full ID or an unambiguous prefix is accepted.
-codex-insights session 019fe51f
-
+codex-insights session SESSION_ID_PREFIX --commits
 codex-insights repos
 codex-insights models
-codex-insights stats
-
-# Machine-readable forms are available on every history command.
-codex-insights sessions --since 30d --json
-codex-insights session 019fe51f --json
+codex-insights stats --json
 ```
 
-`--since` is inclusive. An ISO timestamp supplied to `--until` is exclusive; a date-only value
-includes that complete calendar day. Stored timestamps are UTC, while human-readable tables render
-times in the local timezone. Missing token data is shown as `unknown` and serialized as `null`, not
-treated as zero. Sessions without a resolved Git root appear under `Outside Git repositories`.
-
-## Analyze token usage
-
-`usage` reports reconciled additive token totals and always shows how many matching sessions
-contain token records. Exact inherited or replayed parent baselines are counted once; ambiguous
-child relationships retain their observed total and are reported explicitly. Missing per-session
-or per-field values stay `unknown` in tables and `null` in JSON.
+Analyze reconciled usage and provenance:
 
 ```bash
-codex-insights usage
-codex-insights usage --since 7d --by repo --top 10
-codex-insights usage --since 30d --by model --top 5
-codex-insights usage --by day --timezone Asia/Shanghai
-codex-insights usage --by week --timezone local
-codex-insights usage --repo my-project --model model-name --json
 codex-insights usage --reconciliation
+codex-insights usage --since 30d --by model --top 10
+codex-insights usage --by day --timezone Asia/Shanghai
+codex-insights provenance
 ```
 
-Repository groups come only from the normalized repository root/name recorded during indexing;
-arbitrary working-directory substrings are not treated as repository identities. Day and week
-buckets use `--timezone`, whose default is the machine's local timezone. Weeks start on Monday.
-Mean, median, and nearest-rank p90 tokens/session describe observed per-rollout totals and use only
-sessions with known total-token data. Additive totals use reconciled per-session contributions.
-Sessions/day uses the selected calendar window, or the inclusive first-to-latest activity span
-when no time filter is supplied.
-
-`usage --reconciliation` shows the observed rollout sum, confidently identified inherited/replayed
-usage, reconciled aggregate, child-thread coverage, and ambiguous contribution. Child-exclusive
-usage is attributed to the child's own start date, repository, and model. Local telemetry is not a
-guarantee of billing or quota semantics and is not tuned to match a Codex UI value.
-
-`provenance` applies the same observed-versus-originated distinction to selected non-token event
-families. It stores only versioned fingerprints, order, approximate lengths, and evidence—not
-message bodies, commands, patches, tool output, or reasoning. Exact ordered replay is attributed to
-the known ancestor; weak overlap remains explicit and is not deduplicated. See
-[docs/event-provenance.md](docs/event-provenance.md).
-
-## Search user prompts
-
-Prompt history is local, origin-aware, and privacy-filtered. Replay copies in descendant rollouts
-are observations of the originating prompt rather than separate search hits. System/developer
-instructions, subagent instructions, assistant content, reasoning, commands, and tool output are
-excluded. Obvious credential forms are redacted before storage, and prompts are capped at 100,000
-stored characters.
+Inspect local content and activity:
 
 ```bash
-codex-insights prompts --since 7d --repo my-project
-codex-insights search "migration" --model model-name
-codex-insights search '"quoted phrase"' --session SESSION_PREFIX --json
-codex-insights prompt prm_IDENTIFIER_PREFIX
-```
-
-Search uses SQLite FTS5 rather than a silent substring fallback. Prompt output is sensitive even
-after redaction; see [docs/privacy.md](docs/privacy.md) for the exact content, lineage, redaction,
-and long-prompt policy.
-
-## Phase-II analytics and reports
-
-Tool, Git, outcome, and task analytics use the same explicit observed-versus-originated provenance
-model as prompts and tokens:
-
-```bash
+codex-insights prompts --since 7d
+codex-insights search '"quoted phrase"' --repo codex-insights
+codex-insights prompt PROMPT_ID_PREFIX
 codex-insights tools --since 7d
-codex-insights commands --since 7d --repeated
+codex-insights commands --repeated
+```
+
+Review higher-level evidence:
+
+```bash
 codex-insights commits --confidence high
+codex-insights commit COMMIT_PREFIX
 codex-insights outcomes --since 30d
 codex-insights tasks --by type
-codex-insights tasks --by domain --repo codex-insights
+codex-insights tasks --by domain
 ```
 
-Commands are bounded and privacy-filtered before storage; raw stdout/stderr is not retained. Commit
-correlation uses read-only Git inspection and reports HIGH, MEDIUM, and LOW evidence separately.
-Outcomes and tasks are deterministic, explainable classifications, with `unknown` preferred over
-unsupported certainty. Prompt features are descriptive and versioned; no prompt-quality score or LLM
-classifier is used.
+`--since` is inclusive. Timestamp `--until` values are exclusive; a date-only `--until` includes
+that complete calendar day. Commands that group by local calendar time accept `--timezone`; stored
+timestamps remain timezone-aware UTC. JSON uses `null` for unavailable values rather than silently
+turning them into zero.
 
-Periodic reports reuse these analytics and write a file only when `--output` is explicit:
+## Reports and dashboard
 
 ```bash
-codex-insights report weekly --date 2026-08-09 --timezone UTC
-codex-insights report monthly --format json --output ~/codex-month.json
-codex-insights report weekly --format html --output ~/codex-week.html
+codex-insights report weekly --timezone local
+codex-insights report monthly --format json --output monthly.json
+codex-insights report weekly --format html --output weekly.html
+
+codex-insights dashboard --since 30d --output dashboard.html
+codex-insights dashboard --repo codex-insights --task implementation --open
 ```
 
-This abridged report fragment also comes from synthetic fixtures:
+Reports and dashboards reuse the same analytics layer as the CLI. Filters are applied while the
+artifact is generated; HTML contains bounded aggregate data, escaped user-controlled labels, and no
+remote assets or embedded prompt/command bodies. File output is explicit and rejects the Codex
+home, the derived database, protected configuration, symlink aliases, and existing source inodes.
+See [reports](docs/reports.md) and [dashboard](docs/dashboard.md).
 
-```text
-# Codex Insights Weekly Report
-
-Period: 2026-08-03 to 2026-08-09 (UTC)
-Sessions: 3
-Reconciled known tokens: 50
-Token coverage: 1/3 sessions
-UNKNOWN outcomes: 3
-```
-
-See [docs/metrics.md](docs/metrics.md), [docs/git-correlation.md](docs/git-correlation.md),
-[docs/outcomes.md](docs/outcomes.md), [docs/task-taxonomy.md](docs/task-taxonomy.md), and
-[docs/reports.md](docs/reports.md) for the exact evidence, attribution, and coverage semantics.
-
-This abridged example is generated from the repository's synthetic four-session fixture—not real
-history:
+Synthetic CLI example:
 
 ```text
 $ codex-insights usage --by repo --timezone UTC
 150 reconciled tokens across 2/4 sessions with token records (50.0%)
-Timezone: UTC
 
-Repository                Sessions  Reconciled tokens  Token data  Mean/session    P90  Sessions/day
-repo-one                         2           100         1/2         100.0  100.0          0.22
-Outside Git repositories        1            50         1/1          50.0   50.0          0.11
-repo-two                         1       unknown         0/1       unknown unknown          0.11
+Repository                Sessions  Reconciled tokens  Token data
+repo-one                         2                100         1/2
+Outside Git repositories        1                 50         1/1
+repo-two                         1            unknown         0/1
 ```
 
-See [docs/data-safety.md](docs/data-safety.md) for the enforceable policy.
-Observed source concepts and unstable assumptions are tracked in
-[docs/source-format.md](docs/source-format.md).
+## Metric semantics
 
-The default derived database is `~/Library/Application Support/Codex Insights/index.sqlite3` on
-macOS, `%LOCALAPPDATA%\Codex Insights\index.sqlite3` on Windows, and
-`${XDG_DATA_HOME:-~/.local/share}/codex-insights/index.sqlite3` on other platforms. `--db PATH`
-overrides it. Codex Insights rejects a database path equal to or nested beneath the selected Codex
-home.
+The central distinction is between what physically appears in a rollout and what the local
+evidence model can attribute to that thread:
 
-## Privacy and derived-data control
+- a session detail shows its observed final cumulative rollout usage;
+- additive totals use reconciled local contributions, subtracting only exact inherited/replayed
+  ancestor baselines;
+- mean, median, and p90 tokens/session describe observed per-rollout values;
+- prompts and tool/command totals use origin-aware logical/originated events;
+- Git associations retain HIGH, MEDIUM, LOW, and ambiguous evidence separately;
+- outcomes and tasks are deterministic, versioned heuristics with UNKNOWN retained.
 
-`privacy` explains what the local derived index stores and excludes. `privacy inspect` reports only
-category counts, policy flags, and locations—never prompt or command values.
+Ambiguous lineage is not guessed away. Missing values remain unknown, coverage denominators are
+shown, and child-exclusive contributions stay attributed to the child's repository, model, and
+start-time bucket. Local Codex token telemetry is not guaranteed to equal OpenAI server-side quota,
+billing, or UI accounting. Full definitions are frozen in [metrics](docs/metrics.md).
+
+## Architecture
+
+```text
+Codex source files and read-only state databases
+  -> CodexLocalAdapter (unstable source-format boundary)
+  -> normalized source-independent models
+  -> separate versioned Codex Insights SQLite index
+  -> shared analytics/query layer
+  -> CLI, exports, reports, and static dashboard
+```
+
+The adapter is the only layer that understands undocumented Codex-local schemas. Core analytics do
+not depend on a particular `state_*.sqlite`, table name, rollout path depth, or event spelling. The
+index is rebuildable derived state and its migrations never target Codex-owned databases. See
+[architecture](docs/architecture.md) and [database schema](docs/database-schema.md).
+
+## Source compatibility
+
+Codex local storage is undocumented and may change without notice. Codex Insights selects source
+databases by compatible structure and rollout-reference consistency, records parser/schema
+versions, counts unknown record shapes without storing payloads, and models capabilities as
+`available`, `degraded`, `not_observed`, or `unknown`. A live partial write or failed reparse keeps
+the last trustworthy normalized session and marks it stale instead of replacing it with incomplete
+data. Use `doctor --deep` after a Codex update. See [source compatibility](docs/schema-compatibility.md)
+and [observed source formats](docs/source-format.md).
+
+## Privacy controls, export, backup, and reset
 
 ```bash
-codex-insights privacy
 codex-insights privacy inspect --json
-
-# Control text stored by future indexing. Metadata/counts remain available.
-codex-insights privacy config --store-prompts off
-codex-insights privacy config --store-command-text off
-
-# Removing already stored text is a separate, confirmed operation.
+codex-insights privacy config --store-prompts off --store-command-text off
 codex-insights privacy purge prompts
 codex-insights privacy purge command-text
+
+codex-insights export --dataset usage --format json --output usage.json
+codex-insights export --dataset sessions --format csv --output sessions.csv
+codex-insights backup-index /safe/path/index-backup.sqlite3
+codex-insights reset-index --backup /safe/path/before-reset.sqlite3
 ```
 
-The defaults preserve existing Phase-II behavior: prompt text is origin-aware, redacted, and capped;
-command text is redacted and capped. Raw stdout/stderr and hidden reasoning are never a retention
-toggle. Re-enabling storage triggers a controlled reconciliation for sessions indexed while the
-setting was off. The default config path is
-`~/Library/Application Support/Codex Insights/config.json` on macOS,
-`%LOCALAPPDATA%\Codex Insights\config.json` on Windows, and
-`${XDG_CONFIG_HOME:-~/.config}/codex-insights/config.json` elsewhere.
+Exports are stable `codex-insights-export-v1` JSON or spreadsheet-safe CSV. They obey the active
+retention policy, use explicit `observed_rollout_*` and `reconciled_local_*` names, and escape
+formula-like CSV cells. Purge clears prompt rows and FTS content or nulls retained command text;
+backup uses SQLite's consistency API and reports retained text counts; reset verifies the expected
+Insights schema before deleting only the derived database and sidecars.
 
-Export one normalized dataset at a time as stable `codex-insights-export-v1` JSON or
-spreadsheet-safe CSV:
+## Development, testing, and benchmarks
 
 ```bash
-codex-insights export --dataset sessions --output sessions.json
-codex-insights export --dataset usage --format csv --output usage.csv
-codex-insights export --dataset repositories --since 30d --output repositories.json
-```
-
-Additive token fields are explicitly named `reconciled_local_*`; per-session rollout fields are
-named `observed_rollout_*`. Prompt/command exports use only currently permitted stored redacted
-text. CSV prefixes formula-like text with an apostrophe. Existing files require `--overwrite`, and
-missing output parents require `--create-parents`.
-
-`backup-index DESTINATION` uses SQLite's consistent backup API and reports whether retained prompt
-or command bodies are included. `reset-index` validates and displays the real derived DB path,
-requires confirmation unless `--yes`, and optionally accepts an explicit `--backup PATH`. Reset
-deletes only the verified Insights DB and SQLite sidecars; the next `index` rebuilds from untouched
-Codex source data. See [docs/privacy.md](docs/privacy.md) for the threat model, path/symlink rules,
-purge semantics, and export schemas.
-
-## Development setup
-
-Python 3.11 or newer is required.
-
-```bash
-# Creates the non-hidden venv-acceptance environment, installs editable,
-# and verifies both a fresh import and the CLI entry point.
 ./scripts/setup-dev.sh
 source venv-acceptance/bin/activate
 
-pytest
-ruff check .
-mypy
-codex-insights --help
-codex-insights version
-codex-insights doctor --codex-home tests/fixtures/codex_home
+python -m pytest
+python -m ruff check .
+python -m mypy src
+python -m build
 ```
 
-All tests use committed synthetic fixtures or temporary directories. They must never inspect the
-developer's real Codex history.
+The setup helper uses a non-hidden environment name and verifies the prior macOS editable-install
+failure mode where Python can skip an editable `.pth` marked `UF_HIDDEN`. It checks and repairs only
+the verified Codex Insights artifact inside the active isolated environment.
 
-### macOS editable-install caveat
+CI is configured for Python 3.11, 3.12, 3.13, and 3.14, Ruff, mypy, wheel/sdist installation, Linux
+CLI smoke tests, and macOS normal/editable-install smoke tests. Tests use committed fixtures or
+temporary deterministic synthetic corpora; they never read a developer's real Codex history.
 
-A regular `python -m pip install .` installs package files normally and does not depend on a
-`.pth` file. A setuptools editable install uses a generated file such as
-`__editable__.codex_insights-0.1.0.pth` to add this repository's `src/` directory at Python
-startup.
-
-Python 3.14 on macOS skips a `.pth` whose filesystem flags include `UF_HIDDEN`. This can produce a
-misleading `ModuleNotFoundError` even when the editable file contains the correct source path. It
-is filesystem metadata on the development environment, not a Codex source-discovery or history
-ingestion failure.
-
-The supported setup helper prevents the observed condition by defaulting to the non-dot-prefixed
-`venv-acceptance` directory. It then verifies that the editable artifact is inside that active
-environment, checks its macOS flags, and starts a fresh Python process to confirm the file was not
-skipped. If `UF_HIDDEN` is present, the helper runs targeted `chflags nohidden` only on the verified
-Codex Insights editable `.pth`; it never recursively changes an environment or touches unrelated
-`.pth` files. The guard waits briefly and fails with instructions to recreate the environment if
-macOS reapplies the flag, as occurred in the affected dot-prefixed acceptance environment.
-
-To diagnose an existing editable environment without reinstalling, run the guard with that
-environment's Python:
+The 10,000-session synthetic benchmark covers fresh, unchanged, and one-session-changed indexing,
+common analytics, reports, dashboard generation, memory, and database size. Run it manually:
 
 ```bash
-path/to/environment/bin/python scripts/editable_install_guard.py
+python scripts/benchmark.py --sessions 10000 --output /tmp/codex-benchmark.json
 ```
 
-Avoid dot-prefixed development environments in macOS user-visible folders such as Desktop. The
-failure was not reproduced by a fresh dot-prefixed environment under `/tmp`, so the directory name
-alone is not a universal trigger; the supported non-dot name avoids the observed Desktop metadata
-interaction and the guard detects any recurrence.
+One reference run on Python 3.14/macOS completed fresh indexing in 47.5 s, unchanged and one-session
+updates in about 5.0 s, the slowest common query in 0.22 s, report/dashboard generation in 4.7/5.0
+s, with 262 MiB peak process memory and a 119.6 MiB derived database. Timings are diagnostics, not
+portable performance guarantees.
 
-## Planned architecture
+See [testing](docs/testing.md) and [benchmarks](docs/benchmarks.md). The optional
+`scripts/real_local_smoke.py` is developer-only, aggregate-only, explicitly confirmed, and never
+used by tests or CI.
 
-Codex storage is treated as an unstable external format behind an adapter boundary:
+## Known limitations
 
-```text
-Codex source files
-  -> source adapters
-  -> normalized internal models
-  -> separate Codex Insights SQLite index
-  -> analytics
-  -> CLI / reports / future dashboard
-```
+- Codex local storage is undocumented; source capabilities vary across Codex versions.
+- Some child-thread lineage remains ambiguous and is intentionally not deduplicated by guesswork.
+- Local token telemetry may differ from OpenAI server-side billing, quota, or UI accounting.
+- Git correlation is deliberately conservative; only exact originated evidence is HIGH confidence.
+- Outcome classification and task taxonomy are versioned heuristics, not semantic or causal truth;
+  UNKNOWN and LOW-confidence results are expected.
+- Redaction is bounded pattern recognition, not a substitute for encryption or access control.
+- Prompt search covers retained, redacted, origin-aware user prompts only; disabled or purged text
+  cannot be reconstructed.
+- The dashboard is generated static HTML rather than a continuously updating server.
+- CI is configured but remote CI status is only meaningful after commits are pushed and workflows
+  run; a local checkout cannot claim remote validation.
 
-The `src/codex_insights/adapters/` package isolates source-format changes. Normalized models avoid
-retaining raw tool stdout or stderr, while `analytics/` remains independent of the source format.
-The database module enforces separation between Codex home and the analyzer index. The core
-indexer consumes only the normalized adapter contract and therefore does not depend on a particular
-state database version, table name, rollout directory depth, or undocumented event name.
-Reusable history queries live under `analytics/`; terminal and JSON formatting remain in the CLI
-layer and never query Codex-owned storage.
+## Roadmap
 
-More detail is in [docs/architecture.md](docs/architecture.md).
-The normalized tables and migration policy are documented in
-[docs/database-schema.md](docs/database-schema.md).
-
-## Intentionally not implemented
-
-- a dashboard or web server;
-- LLM or semantic transcript analysis;
-- prompt-style quality scoring or causal efficiency claims;
-- reproduction of OpenAI server-side billing or quota accounting.
-
-These features require separate evidence and product-design work. Codex Insights does not retain the
-raw assistant/tool transcript content that such analysis would require.
+Post-v1 work may improve source-version adapters, provenance evidence, configurable taxonomy rules,
+and longitudinal efficiency diagnostics. LLM transcript analysis, causal productivity scoring, and
+automatic upload are intentionally outside the current product.
 
 ## License
 
-MIT
+[MIT](LICENSE)

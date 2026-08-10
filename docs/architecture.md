@@ -2,7 +2,7 @@
 
 ## Goals
 
-Codex Insights will provide local analytics over Codex activity while treating the user's Codex
+Codex Insights provides local analytics over Codex activity while treating the user's Codex
 state as an immutable external source. The foundation favors a small Python surface area, explicit
 boundaries, and replaceable format-specific code.
 
@@ -14,7 +14,7 @@ flowchart LR
     B --> C["Normalized internal models"]
     C --> D["Codex Insights SQLite index"]
     D --> E["Analytics"]
-    E --> F["CLI, reports, future dashboard"]
+    E --> F["CLI, exports, reports, static dashboard"]
 ```
 
 1. **Codex source files** remain owned by Codex and are opened only for bounded, read-only
@@ -25,8 +25,8 @@ flowchart LR
    counts, aggregate tool usage, and cautiously inferred outcomes.
 4. **Codex Insights SQLite index** is a derived, rebuildable database stored outside Codex home.
 5. **Analytics** answer product questions from normalized local data rather than raw rollouts.
-6. **Interfaces** expose results through the CLI and reports first, with a dashboard only when its
-   requirements are clear.
+6. **Interfaces** expose results through the CLI, normalized exports, reports, and a static offline
+   dashboard without reopening source rollouts.
 
 ## Source-adapter boundary
 
@@ -68,6 +68,8 @@ replace `CodexLocalAdapter` without changing analytics or presentation code.
 - `prompt_features.py`: descriptive, versioned prompt patterns without a quality score.
 - `analytics/reports.py`: one periodic report model composed from shared analytics functions.
 - `reporting.py`: Markdown, stable JSON, and escaped self-contained HTML presentation.
+- `analytics/dashboard.py`: one static dashboard model composed from shared analytics functions.
+- `dashboard_rendering.py`: escaped, self-contained HTML with no remote assets or scripts.
 
 ## Index lifecycle
 
@@ -112,7 +114,6 @@ that every record in a child rollout was created by that child.
 4. Cross-thread event provenance and privacy-aware user-prompt search.
 5. Tool analytics and Git commit correlation using origin-aware evidence (implemented).
 6. Conservative outcome/task heuristics with explainable evidence (implemented).
-7. Weekly/monthly CLI reports and export controls (implemented); an optional local dashboard remains
-   a future stage.
+7. Weekly/monthly CLI reports, export controls, and an offline static dashboard (implemented).
 
 Each stage must preserve the data-safety invariants in `docs/data-safety.md`.

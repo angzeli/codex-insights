@@ -54,5 +54,5 @@ existing targets against known source-file inodes so a hard-link alias cannot by
 Before implementing ingestion, validate source format recognition, read-only failure behavior,
 bounded parsing, redaction/minimization, fixture realism without user data, and index provenance.
 Exports select one normalized dataset explicitly, obey current content-retention policy, and use
-the stable schemas and destination safeguards defined in `docs/privacy.md`. A future dashboard must
-undergo the same field-by-field review.
+the stable schemas and destination safeguards defined in `docs/privacy.md`. The static dashboard
+undergoes the same field-by-field review.

@@ -40,11 +40,11 @@ artifacts. The seed and requested proportions make regeneration deterministic.
 
 ## CI matrix
 
-GitHub Actions runs the full test suite on Python 3.11, 3.12, 3.13, and 3.14. Separate jobs run Ruff
-and mypy, build wheel and sdist artifacts, install each artifact in a clean environment, and smoke
-test the CLI. A macOS job validates both normal and editable installation, fresh-process imports,
-the entry point, and the narrow hidden-`.pth` guard that protects against the previously observed
-editable-install failure. The guard does not monkeypatch Python site behavior.
+GitHub Actions is configured to run the full test suite on Python 3.11, 3.12, 3.13, and 3.14.
+Separate jobs run Ruff and mypy, build wheel and sdist artifacts, install each artifact in a clean
+environment, and smoke test the CLI. A macOS job validates both normal and editable installation,
+fresh-process imports, the entry point, and the narrow hidden-`.pth` guard that protects against the
+previously observed editable-install failure. The guard does not monkeypatch Python site behavior.
 
 CI sets `CODEX_HOME` to an empty disposable directory. It does not upload, cache, or discover real
 Codex source state. The 10,000-session benchmark is not part of every test matrix cell; see
