@@ -21,6 +21,8 @@ class OutcomeFilters:
     until: datetime | None = None
     repository: str | None = None
     model: str | None = None
+    task_action: str | None = None
+    task_domain: str | None = None
     outcome: str | None = None
     confidence: str | None = None
     limit: int = 100
@@ -133,6 +135,12 @@ def _query(filters: OutcomeFilters) -> tuple[str, tuple[object, ...]]:
         else:
             conditions.append("sessions.model = ? COLLATE NOCASE")
             parameters.append(filters.model)
+    if filters.task_action:
+        conditions.append("COALESCE(tasks.action, 'unknown') = ?")
+        parameters.append(filters.task_action.casefold())
+    if filters.task_domain:
+        conditions.append("COALESCE(tasks.domain, 'unknown') = ?")
+        parameters.append(filters.task_domain.casefold())
     if filters.outcome:
         conditions.append("COALESCE(outcomes.outcome, 'unknown') = ?")
         parameters.append(filters.outcome.casefold())
@@ -150,6 +158,7 @@ def _query(filters: OutcomeFilters) -> tuple[str, tuple[object, ...]]:
         FROM source_sessions AS sessions
         LEFT JOIN repositories AS repositories ON repositories.id = sessions.repository_id
         LEFT JOIN session_outcomes AS outcomes ON outcomes.session_id = sessions.id
+        LEFT JOIN session_tasks AS tasks ON tasks.session_id = sessions.id
         {where}
         ORDER BY sessions.started_at IS NULL, sessions.started_at DESC,
                  sessions.source_session_id

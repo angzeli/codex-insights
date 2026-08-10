@@ -16,6 +16,7 @@ from codex_insights import __version__
 from codex_insights.adapters import CodexLocalAdapter, SourceAuditResult
 from codex_insights.adapters.audit_models import FieldObservation
 from codex_insights.config import resolve_codex_home, resolve_index_path
+from codex_insights.dashboard_cli import register_dashboard_command
 from codex_insights.db import UnsafeDatabasePathError, inspect_index
 from codex_insights.diagnostics import DeepDoctorReport, run_deep_diagnostics
 from codex_insights.git_cli import register_git_commands
@@ -47,6 +48,7 @@ register_tool_commands(app)
 register_outcome_command(app)
 register_task_command(app)
 register_report_commands(app)
+register_dashboard_command(app)
 register_privacy_commands(app)
 register_maintenance_commands(app)
 

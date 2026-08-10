@@ -5,7 +5,7 @@ sessions. Its goal is to make patterns such as project activity, token use, mode
 tool frequency, Git correlation, outcomes, and efficiency trends understandable without
 uploading a user's private working history.
 
-## Project status: v0.1.0 MVP with Phase-II local analytics
+## Project status: v0.1.0 MVP with Phase-III local analytics
 
 The local-first command-line MVP is ready for daily use. It can audit an installed Codex layout,
 incrementally index normalized session metadata, explore individual sessions, report token usage,
@@ -13,6 +13,8 @@ audit cross-thread replay, search redacted origin-aware user prompts, analyze or
 correlate Git commits, classify outcomes/tasks, and generate offline weekly or monthly reports.
 It also provides explicit text-retention controls, safe normalized exports, consistent derived-index
 backups, and a guarded reset that never deletes Codex source history.
+The static offline dashboard turns those shared metrics into a polished local analytics workbench
+without adding a server or remote assets.
 
 ```text
 codex-insights --help
@@ -41,11 +43,29 @@ codex-insights outcomes --since 30d
 codex-insights tasks --by type
 codex-insights report weekly --format markdown
 codex-insights report monthly --format html --output ~/codex-month.html
+codex-insights dashboard --since 30d --output ~/codex-dashboard.html
 codex-insights privacy inspect
 codex-insights export --dataset usage --format json --output usage.json
 codex-insights backup-index ~/codex-insights-backup.sqlite3
 codex-insights reset-index --backup ~/before-reset.sqlite3
 ```
+
+## Offline dashboard
+
+Generate a self-contained dashboard from the normalized index:
+
+```bash
+codex-insights dashboard
+codex-insights dashboard --since 30d --repo example-project
+codex-insights dashboard --task implementation --domain software_engineering --open
+```
+
+The default file is `codex-insights-dashboard.html` in the current directory. Filters are applied
+during generation, so the file contains bounded aggregate data rather than a copy of the database or
+raw event history. It includes overview, activity, repository/model, tool/command, task, outcome,
+Git, interesting-session, and data-quality sections. No prompt bodies, command text, raw outputs,
+remote scripts, CDNs, analytics, or tracking are embedded. See
+[docs/dashboard.md](docs/dashboard.md).
 
 Codex home resolution uses this precedence:
 

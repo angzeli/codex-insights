@@ -283,6 +283,10 @@ def _usage_query(filters: SessionFilters) -> str:
             conditions.append("(s.model IS NULL OR s.model = '')")
         else:
             conditions.append("s.model = ? COLLATE NOCASE")
+    if filters.task_action:
+        conditions.append("COALESCE(tasks.action, 'unknown') = ?")
+    if filters.task_domain:
+        conditions.append("COALESCE(tasks.domain, 'unknown') = ?")
     where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
     return f"""
         SELECT s.source_session_id, s.started_at, s.repository_root, s.repository_name,
@@ -297,6 +301,7 @@ def _usage_query(filters: SessionFilters) -> str:
                u.inherited_baseline_total_tokens
         FROM source_sessions AS s
         LEFT JOIN accounted_usage AS u ON u.source_session_id = s.id
+        LEFT JOIN session_tasks AS tasks ON tasks.session_id = s.id
         {where}
         ORDER BY s.started_at IS NULL, s.started_at ASC, s.source_session_id ASC
     """
@@ -316,6 +321,10 @@ def _usage_parameters(filters: SessionFilters) -> tuple[object, ...]:
         parameters.extend((filters.repository, filters.repository))
     if filters.model and filters.model.casefold() not in {"unknown", "none"}:
         parameters.append(filters.model)
+    if filters.task_action:
+        parameters.append(filters.task_action.casefold())
+    if filters.task_domain:
+        parameters.append(filters.task_domain.casefold())
     return tuple(parameters)
 
 

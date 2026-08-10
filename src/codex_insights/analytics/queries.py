@@ -57,6 +57,7 @@ LEFT JOIN ranked_ingestion AS i
       AND i.source_session_id = s.source_session_id
       AND i.rank = 1
 LEFT JOIN session_outcomes AS o ON o.session_id = s.id
+LEFT JOIN session_tasks AS task_filter ON task_filter.session_id = s.id
 """
 
 
@@ -85,6 +86,8 @@ class SessionFilters:
     until: datetime | None = None
     repository: str | None = None
     model: str | None = None
+    task_action: str | None = None
+    task_domain: str | None = None
     source: str | None = None
     archived: bool | None = None
     limit: int = 50
@@ -417,6 +420,12 @@ def list_sessions(
         else:
             conditions.append("s.model = ? COLLATE NOCASE")
             parameters.append(selected.model)
+    if selected.task_action:
+        conditions.append("COALESCE(task_filter.action, 'unknown') = ?")
+        parameters.append(selected.task_action.casefold())
+    if selected.task_domain:
+        conditions.append("COALESCE(task_filter.domain, 'unknown') = ?")
+        parameters.append(selected.task_domain.casefold())
     if selected.source:
         conditions.append("COALESCE(s.client_source, s.source_type) = ? COLLATE NOCASE")
         parameters.append(selected.source)

@@ -22,6 +22,8 @@ class ToolFilters:
     until: datetime | None = None
     repository: str | None = None
     model: str | None = None
+    task_action: str | None = None
+    task_domain: str | None = None
     session: str | None = None
     category: CommandCategory | None = None
     limit: int = 25
@@ -262,6 +264,12 @@ def _activity_query(
         else:
             conditions.append("sessions.model = ? COLLATE NOCASE")
             parameters.append(filters.model)
+    if filters.task_action:
+        conditions.append("COALESCE(tasks.action, 'unknown') = ?")
+        parameters.append(filters.task_action.casefold())
+    if filters.task_domain:
+        conditions.append("COALESCE(tasks.domain, 'unknown') = ?")
+        parameters.append(filters.task_domain.casefold())
     if resolved_session is not None:
         conditions.append("activity.observed_session_id = ?")
         parameters.append(resolved_session)
@@ -278,6 +286,7 @@ def _activity_query(
                sessions.started_at
         FROM tool_activity AS activity
         JOIN source_sessions AS sessions ON sessions.id = activity.observed_session_id
+        LEFT JOIN session_tasks AS tasks ON tasks.session_id = sessions.id
         {where}
         ORDER BY {activity_time} IS NULL, {activity_time},
                  sessions.source_session_id, activity.source_ordinal,

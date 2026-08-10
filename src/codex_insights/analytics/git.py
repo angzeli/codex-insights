@@ -29,6 +29,8 @@ class GitFilters:
     repository: str | None = None
     confidence: str | None = None
     model: str | None = None
+    task_action: str | None = None
+    task_domain: str | None = None
     limit: int = 100
 
 
@@ -226,6 +228,7 @@ JOIN git_commits AS commits ON commits.id = associations.commit_id
 JOIN repositories AS repositories ON repositories.id = commits.repository_id
 JOIN source_sessions AS sessions ON sessions.id = associations.session_id
 LEFT JOIN accounted_usage AS usage ON usage.source_session_id = sessions.id
+LEFT JOIN session_tasks AS tasks ON tasks.session_id = sessions.id
 """
 _ASSOCIATION_ORDER = """
 ORDER BY commits.committed_at DESC, repositories.identity_key,
@@ -257,6 +260,12 @@ def _association_query(filters: GitFilters) -> tuple[str, tuple[object, ...]]:
         else:
             conditions.append("sessions.model = ? COLLATE NOCASE")
             parameters.append(filters.model)
+    if filters.task_action:
+        conditions.append("COALESCE(tasks.action, 'unknown') = ?")
+        parameters.append(filters.task_action.casefold())
+    if filters.task_domain:
+        conditions.append("COALESCE(tasks.domain, 'unknown') = ?")
+        parameters.append(filters.task_domain.casefold())
     where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
     return _ASSOCIATION_SELECT + f" {where} " + _ASSOCIATION_ORDER, tuple(parameters)
 

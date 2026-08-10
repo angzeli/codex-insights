@@ -37,6 +37,8 @@ All notable changes to Codex Insights are documented here.
   sessions, usage, prompts, commands, commits, outcomes, tasks, repositories, and models;
 - consistent SQLite derived-index backup metadata and guarded `reset-index` with an optional
   explicit backup.
+- a self-contained, serverless `dashboard` command with shared reconciled metrics, generation-time
+  time/repository/model/task filters, explicit data quality, and no remote assets or private text.
 
 ### Changed
 
@@ -46,6 +48,8 @@ All notable changes to Codex Insights are documented here.
 - aggregate tool/command metrics exclude exact inherited or replayed observations while preserving
   per-session observations and explicit ambiguity;
 - periodic comparisons suppress percentages when token coverage changes materially.
+- dashboard and report presentation reuse the canonical analytics/query layer rather than defining
+  alternate token, prompt, command, Git, outcome, or task semantics.
 - state databases are selected by compatible structure and rollout-reference consistency rather
   than numeric filename order; alternative candidates are reported and never silently combined.
 
