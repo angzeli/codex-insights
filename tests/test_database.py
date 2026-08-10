@@ -56,6 +56,10 @@ def test_index_schema_is_versioned_and_normalized(tmp_path: Path) -> None:
             str(row[0])
             for row in connection.execute("SELECT name FROM sqlite_schema WHERE type = 'view'")
         }
+        indexes = {
+            str(row[0])
+            for row in connection.execute("SELECT name FROM sqlite_schema WHERE type = 'index'")
+        }
 
     assert version == SCHEMA_VERSION
     assert "client_source" in session_columns
@@ -83,6 +87,12 @@ def test_index_schema_is_versioned_and_normalized(tmp_path: Path) -> None:
         "content_retention_state",
     } <= tables
     assert "accounted_usage" in views
+    assert {
+        "tool_activity_event_idx",
+        "tool_activity_output_event_idx",
+        "prompts_origin_event_idx",
+        "prompt_observations_event_idx",
+    } <= indexes
 
 
 def test_index_database_cannot_be_created_under_codex_home(tmp_path: Path) -> None:

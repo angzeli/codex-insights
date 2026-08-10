@@ -6,6 +6,7 @@ from pathlib import Path
 
 from typer.testing import CliRunner
 
+import codex_insights.indexer as indexer_module
 from codex_insights.adapters import CodexLocalAdapter
 from codex_insights.cli import app
 from codex_insights.config import resolve_codex_home
@@ -200,6 +201,7 @@ def test_adjacent_user_wrapper_records_are_mirrored_observations() -> None:
 
 def test_index_persists_event_provenance_and_unchanged_run_is_idempotent(
     tmp_path: Path,
+    monkeypatch,
 ) -> None:
     codex_home = tmp_path / "synthetic-codex-home"
     sessions = codex_home / "sessions"
@@ -255,6 +257,17 @@ def test_index_persists_event_provenance_and_unchanged_run_is_idempotent(
             )
         )
 
+    event_row_reads = 0
+    original_event_rows = indexer_module._event_rows
+
+    def counted_event_rows(
+        connection: sqlite3.Connection, session_id: int
+    ) -> tuple[sqlite3.Row, ...]:
+        nonlocal event_row_reads
+        event_row_reads += 1
+        return original_event_rows(connection, session_id)
+
+    monkeypatch.setattr(indexer_module, "_event_rows", counted_event_rows)
     second = index_source(adapter, database, codex_home=codex_home)
     with sqlite3.connect(database) as connection:
         after = tuple(
@@ -289,6 +302,7 @@ def test_index_persists_event_provenance_and_unchanged_run_is_idempotent(
     assert "synthetic parent prompt" not in cli.stdout
     assert second.updated == 0
     assert second.unchanged == 2
+    assert event_row_reads == 0
     assert before == after
 
 

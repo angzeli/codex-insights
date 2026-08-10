@@ -259,6 +259,10 @@ content. The migration defaults legacy Phase-II indexes to prompt/command storag
 their prior behavior; user configuration can then disable future text storage without deleting
 existing rows.
 
+Schema version 15 adds child-key indexes for event-linked tool and prompt rows. These indexes do
+not change stored analytics; they keep SQLite foreign-key cascades bounded when a changed rollout's
+normalized event observations are transactionally replaced.
+
 `usage` contains one observed aggregate row per session. `usage_semantics` distinguishes a source-reported
 `cumulative_total` from `summed_event_deltas`; `unavailable` means no trustworthy token record was
 observed. Schema version 3 makes each token metric nullable so an absent field remains different

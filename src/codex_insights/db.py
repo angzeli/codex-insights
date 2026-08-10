@@ -9,7 +9,7 @@ from pathlib import Path
 
 from codex_insights.path_safety import UnsafeDestinationError, validate_write_target
 
-SCHEMA_VERSION = 14
+SCHEMA_VERSION = 15
 
 _MIGRATION_1 = """
 CREATE TABLE source_sessions (
@@ -748,6 +748,17 @@ INSERT INTO content_retention_state(
 ) VALUES (1, 1, 1, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));
 """
 
+_MIGRATION_15 = """
+CREATE INDEX tool_activity_event_idx
+    ON tool_activity(event_observation_id);
+CREATE INDEX tool_activity_output_event_idx
+    ON tool_activity(output_event_observation_id);
+CREATE INDEX prompts_origin_event_idx
+    ON prompts(origin_event_id);
+CREATE INDEX prompt_observations_event_idx
+    ON prompt_observations(event_observation_id);
+"""
+
 _MIGRATIONS = {
     1: _MIGRATION_1,
     2: _MIGRATION_2,
@@ -763,6 +774,7 @@ _MIGRATIONS = {
     12: _MIGRATION_12,
     13: _MIGRATION_13,
     14: _MIGRATION_14,
+    15: _MIGRATION_15,
 }
 
 

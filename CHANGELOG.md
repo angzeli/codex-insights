@@ -52,6 +52,8 @@ All notable changes to Codex Insights are documented here.
 - added Python 3.11-3.14 CI, Ruff/mypy jobs, wheel/sdist installation smoke tests, and macOS normal
   plus editable-install coverage including the hidden-`.pth` guard;
 - added a manual deterministic benchmark workflow and a 10,000-session performance profile;
+- bounded incremental event-provenance reconciliation to changed topology branches and indexed
+  event foreign keys so updating one live rollout does not rescan or cascade through all events;
 - made literal/exact identifier-prefix resolution consistent across session, prompt, provenance,
   tool, and Git analytics;
 - froze observed, originated, reconciled, confidence, coverage, ambiguous, and UNKNOWN metric

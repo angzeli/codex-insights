@@ -647,6 +647,42 @@ def _reconcile_relationships(
         (item.parent_source_session_id, item.child_source_session_id)
         for item in relationships
     }
+    changed_relationship_source_ids = {
+        source_session_id
+        for edge in existing_keys.symmetric_difference(current_keys)
+        for source_session_id in edge
+    }
+    stale_provenance_source_ids = {
+        str(row["source_session_id"])
+        for row in connection.execute(
+            """
+            SELECT DISTINCT sessions.source_session_id
+            FROM event_observations AS events
+            JOIN source_sessions AS sessions ON sessions.id = events.observed_session_id
+            WHERE sessions.source_type = ? AND sessions.source_home = ?
+              AND events.provenance_algorithm_version != ?
+            """,
+            (adapter.name, source_home, PROVENANCE_ALGORITHM_VERSION),
+        )
+    }
+    affected_provenance_source_ids = (
+        set(parsed_sessions)
+        | changed_relationship_source_ids
+        | stale_provenance_source_ids
+    )
+    descendants_by_parent: dict[str, set[str]] = {}
+    for relationship in relationships:
+        descendants_by_parent.setdefault(
+            relationship.parent_source_session_id, set()
+        ).add(relationship.child_source_session_id)
+    pending_ancestors = list(affected_provenance_source_ids)
+    while pending_ancestors:
+        ancestor = pending_ancestors.pop()
+        for descendant in descendants_by_parent.get(ancestor, ()):
+            if descendant in affected_provenance_source_ids:
+                continue
+            affected_provenance_source_ids.add(descendant)
+            pending_ancestors.append(descendant)
 
     with connection:
         _delete_stale_relationships(
@@ -745,6 +781,7 @@ def _reconcile_relationships(
         relationships=relationships,
         duplicate_children=duplicate_children,
         cycle_source_ids=topology.cycle_nodes,
+        affected_source_ids=frozenset(affected_provenance_source_ids),
     )
     return tuple(warnings)
 
@@ -1072,21 +1109,31 @@ def _reconcile_event_provenance(
     relationships: tuple[NormalizedThreadRelationship, ...],
     duplicate_children: set[str],
     cycle_source_ids: frozenset[str],
+    affected_source_ids: frozenset[str],
 ) -> None:
     """Resolve event origins from explicit topology and exact ordered fingerprints."""
 
-    events_by_session = {
-        session_id: _event_rows(connection, session_id)
-        for session_id in internal_ids.values()
-    }
+    if not affected_source_ids:
+        return
+
+    events_by_session: dict[int, tuple[sqlite3.Row, ...]] = {}
+
+    def event_rows(session_id: int) -> tuple[sqlite3.Row, ...]:
+        rows = events_by_session.get(session_id)
+        if rows is None:
+            rows = _event_rows(connection, session_id)
+            events_by_session[session_id] = rows
+        return rows
+
     child_source_ids = {item.child_source_session_id for item in relationships}
     processed: set[int] = set()
     with connection:
         for source_id, session_id in sorted(internal_ids.items()):
-            rows = events_by_session[session_id]
             if source_id in child_source_ids:
                 continue
-            _mark_root_events(connection, session_id, rows)
+            if source_id in affected_source_ids:
+                _mark_root_events(connection, session_id, event_rows(session_id))
+                events_by_session[session_id] = _event_rows(connection, session_id)
             processed.add(session_id)
 
     pending = [
@@ -1109,19 +1156,20 @@ def _reconcile_event_provenance(
             ):
                 remaining.append(relationship)
                 continue
-            _reconcile_event_edge(
-                connection,
-                relationship=relationship,
-                parent_session_id=parent_id,
-                child_session_id=child_id,
-                parent_rows=_event_rows(connection, parent_id),
-                child_rows=_event_rows(connection, child_id),
-                cyclic=(
-                    relationship.parent_source_session_id in cycle_source_ids
-                    or relationship.child_source_session_id in cycle_source_ids
-                ),
-            )
-            events_by_session[child_id] = _event_rows(connection, child_id)
+            if relationship.child_source_session_id in affected_source_ids:
+                _reconcile_event_edge(
+                    connection,
+                    relationship=relationship,
+                    parent_session_id=parent_id,
+                    child_session_id=child_id,
+                    parent_rows=event_rows(parent_id),
+                    child_rows=event_rows(child_id),
+                    cyclic=(
+                        relationship.parent_source_session_id in cycle_source_ids
+                        or relationship.child_source_session_id in cycle_source_ids
+                    ),
+                )
+                events_by_session[child_id] = _event_rows(connection, child_id)
             processed.add(child_id)
             progressed = True
         if not progressed:
@@ -1138,13 +1186,15 @@ def _reconcile_event_provenance(
     unresolved_children = {
         internal_ids[source_id]
         for source_id in child_source_ids
-        if source_id in internal_ids and internal_ids[source_id] not in processed
+        if source_id in internal_ids
+        and source_id in affected_source_ids
+        and internal_ids[source_id] not in processed
     }
     with connection:
         for child_id in sorted(unresolved_children):
             _mark_events_unknown(
                 connection,
-                _event_rows(connection, child_id),
+                event_rows(child_id),
                 evidence="unresolved_explicit_parent",
             )
 
