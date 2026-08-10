@@ -195,6 +195,7 @@ def _tool_call_candidates(
             command_text = safe.text
             command_fingerprint = safe.fingerprint
             executable = safe.executable
+            command_operation = safe.operation
             test_scope = safe.test_scope
             redacted = safe.redacted
             truncated = safe.truncated
@@ -203,6 +204,7 @@ def _tool_call_candidates(
             command_text = None
             command_fingerprint = None
             executable = None
+            command_operation = None
             test_scope = TestScope.NOT_APPLICABLE
             redacted = False
             truncated = False
@@ -218,6 +220,7 @@ def _tool_call_candidates(
                 command_text=command_text,
                 command_fingerprint=command_fingerprint,
                 executable=executable,
+                command_operation=command_operation,
                 test_scope=test_scope,
                 redacted=redacted,
                 truncated=truncated,

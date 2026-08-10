@@ -7,7 +7,9 @@ from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
 
-SCHEMA_VERSION = 13
+from codex_insights.path_safety import UnsafeDestinationError, validate_write_target
+
+SCHEMA_VERSION = 14
 
 _MIGRATION_1 = """
 CREATE TABLE source_sessions (
@@ -731,6 +733,21 @@ LEFT JOIN ingestion_state AS state
  AND state.source_session_id = sessions.source_session_id;
 """
 
+_MIGRATION_14 = """
+ALTER TABLE tool_activity ADD COLUMN command_operation TEXT;
+
+CREATE TABLE content_retention_state (
+    singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+    store_prompts INTEGER NOT NULL CHECK (store_prompts IN (0, 1)),
+    store_command_text INTEGER NOT NULL CHECK (store_command_text IN (0, 1)),
+    indexed_at TEXT NOT NULL
+);
+
+INSERT INTO content_retention_state(
+    singleton, store_prompts, store_command_text, indexed_at
+) VALUES (1, 1, 1, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));
+"""
+
 _MIGRATIONS = {
     1: _MIGRATION_1,
     2: _MIGRATION_2,
@@ -745,6 +762,7 @@ _MIGRATIONS = {
     11: _MIGRATION_11,
     12: _MIGRATION_12,
     13: _MIGRATION_13,
+    14: _MIGRATION_14,
 }
 
 
@@ -783,6 +801,14 @@ def ensure_index_outside_codex_home(index_path: Path, codex_home: Path) -> None:
     source = _resolved(codex_home)
     if index == source or source in index.parents:
         raise UnsafeDatabasePathError(f"Analyzer database must be outside Codex home: {source}")
+    try:
+        validate_write_target(
+            index,
+            codex_home=codex_home,
+            operation="Analyzer database",
+        )
+    except UnsafeDestinationError as exc:
+        raise UnsafeDatabasePathError(str(exc)) from exc
 
 
 def connect_index(index_path: Path, *, codex_home: Path) -> sqlite3.Connection:

@@ -9,6 +9,7 @@ from codex_insights import __version__
 from codex_insights.adapters import CodexLocalAdapter
 from codex_insights.cli import app
 from codex_insights.config import resolve_codex_home
+from codex_insights.db import SCHEMA_VERSION
 from codex_insights.indexer import index_source
 
 runner = CliRunner()
@@ -84,7 +85,7 @@ def test_doctor_deep_reports_bounded_compatibility_diagnostics(
 
     assert result.exit_code == 0
     payload = json.loads(result.stdout)
-    assert payload["schema_version"] == 13
+    assert payload["schema_version"] == SCHEMA_VERSION
     assert payload["database_integrity"] == "ok"
     assert payload["selected_state_database"] == "state_7.sqlite"
     assert payload["source_session_count"] == 4

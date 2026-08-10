@@ -194,7 +194,7 @@ def _query(filters: TaskFilters) -> tuple[str, tuple[object, ...]]:
             FROM tool_activity
             WHERE provenance_status = 'origin'
               AND origin_session_id = observed_session_id
-              AND command_text IS NOT NULL
+              AND command_fingerprint IS NOT NULL
             GROUP BY observed_session_id
         ),
         confirmed_commits AS (

@@ -22,6 +22,8 @@ from codex_insights.git_cli import register_git_commands
 from codex_insights.history_cli import register_history_commands
 from codex_insights.indexer import index_source
 from codex_insights.outcome_cli import register_outcome_command
+from codex_insights.privacy import load_retention_policy
+from codex_insights.privacy_cli import register_privacy_commands
 from codex_insights.prompt_cli import register_prompt_commands
 from codex_insights.provenance_cli import register_provenance_command
 from codex_insights.report_cli import register_report_commands
@@ -44,6 +46,7 @@ register_tool_commands(app)
 register_outcome_command(app)
 register_task_command(app)
 register_report_commands(app)
+register_privacy_commands(app)
 
 
 @app.command()
@@ -291,6 +294,14 @@ def index_command(
             dir_okay=False,
         ),
     ] = None,
+    config: Annotated[
+        Path | None,
+        typer.Option(
+            "--config",
+            help="Codex Insights privacy configuration (defaults to the platform config path).",
+            dir_okay=False,
+        ),
+    ] = None,
 ) -> None:
     """Incrementally index normalized session metadata and aggregate counts."""
 
@@ -301,9 +312,12 @@ def index_command(
             CodexLocalAdapter(resolution),
             database_path,
             codex_home=resolution.path,
+            retention_policy=load_retention_policy(config, codex_home=resolution.path),
         )
     except UnsafeDatabasePathError as exc:
         raise typer.BadParameter(str(exc), param_hint="--db") from exc
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc), param_hint="--config") from exc
 
     console.print(f"[bold cyan]DB path:[/bold cyan] {report.database_path}", soft_wrap=True)
     summary = Table(title="Codex session index")

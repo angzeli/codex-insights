@@ -325,6 +325,8 @@ def test_index_cli_never_falls_back_to_real_home(
             str(synthetic_audit_home),
             "--db",
             str(database),
+            "--config",
+            str(tmp_path / "config.json"),
         ],
         env={"CODEX_HOME": "/must/not/be/used"},
     )

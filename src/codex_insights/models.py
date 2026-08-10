@@ -341,6 +341,7 @@ class NormalizedToolCallCandidate:
     command_text: str | None = None
     command_fingerprint: str | None = None
     executable: str | None = None
+    command_operation: str | None = None
     test_scope: TestScope = TestScope.NOT_APPLICABLE
     redacted: bool = False
     truncated: bool = False

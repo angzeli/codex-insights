@@ -80,6 +80,7 @@ def test_index_schema_is_versioned_and_normalized(tmp_path: Path) -> None:
         "unknown_source_records",
         "compatibility_warnings",
         "coverage_snapshots",
+        "content_retention_state",
     } <= tables
     assert "accounted_usage" in views
 
@@ -311,9 +312,13 @@ def test_schema_12_migration_preserves_phase_two_derived_rows(tmp_path: Path) ->
             for table in before
         }
         version = connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0]
+        retention = connection.execute(
+            "SELECT store_prompts, store_command_text FROM content_retention_state"
+        ).fetchone()
 
     assert version == SCHEMA_VERSION
     assert after == before
+    assert tuple(retention) == (1, 1)
 
 
 def test_db_info_reports_empty_database(tmp_path: Path) -> None:

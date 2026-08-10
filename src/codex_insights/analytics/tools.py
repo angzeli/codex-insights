@@ -62,7 +62,7 @@ class ActivityGroup:
 class RepeatedCommand:
     """A privacy-filtered command invoked more than once in the selection."""
 
-    command: str
+    command: str | None
     category: str
     executable: str | None
     invocation_count: int
@@ -157,7 +157,7 @@ def get_tool_activity_report(
         and row["origin_session_id"] == row["observed_session_id"]
     ]
     session_count = len({int(row["observed_session_id"]) for row in origin_rows})
-    command_rows = [row for row in origin_rows if row["command_text"] is not None]
+    command_rows = [row for row in origin_rows if row["command_fingerprint"] is not None]
     known_results = sum(row["result_status"] != "unknown" for row in origin_rows)
     failed_results = sum(row["result_status"] == "failure" for row in origin_rows)
     categories = Counter(str(row["command_category"]) for row in origin_rows)
@@ -269,7 +269,7 @@ def _activity_query(
         conditions.append("activity.command_category = ?")
         parameters.append(filters.category.value)
     if commands_only:
-        conditions.append("activity.command_text IS NOT NULL")
+        conditions.append("activity.command_fingerprint IS NOT NULL")
     where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
     return (
         f"""
@@ -332,7 +332,7 @@ def _repeated_commands(
         ]
         results.append(
             RepeatedCommand(
-                command=str(first["command_text"]),
+                command=(str(first["command_text"]) if first["command_text"] is not None else None),
                 category=str(first["command_category"]),
                 executable=(str(first["executable"]) if first["executable"] else None),
                 invocation_count=len(grouped_rows),
@@ -346,7 +346,11 @@ def _repeated_commands(
             )
         )
     results.sort(
-        key=lambda item: (-item.invocation_count, item.command.casefold(), item.category)
+        key=lambda item: (
+            -item.invocation_count,
+            (item.command or "").casefold(),
+            item.category,
+        )
     )
     return tuple(results[:limit])
 

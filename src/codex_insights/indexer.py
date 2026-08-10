@@ -36,7 +36,11 @@ from codex_insights.models import (
     UsageVector,
 )
 from codex_insights.outcomes import OUTCOME_CLASSIFIER_VERSION, reconcile_session_outcomes
-from codex_insights.privacy import PROMPT_CONTENT_SCHEMA_VERSION, redact_prompt
+from codex_insights.privacy import (
+    PROMPT_CONTENT_SCHEMA_VERSION,
+    ContentRetentionPolicy,
+    redact_prompt,
+)
 from codex_insights.prompt_features import reconcile_prompt_features
 from codex_insights.provenance import (
     PROVENANCE_ALGORITHM_VERSION,
@@ -95,6 +99,7 @@ def index_source(
     database_path: Path,
     *,
     codex_home: Path,
+    retention_policy: ContentRetentionPolicy | None = None,
 ) -> IndexReport:
     """Incrementally upsert normalized sessions while isolating per-session failures."""
 
@@ -102,7 +107,13 @@ def index_source(
     counts = {name: 0 for name in ("new", "updated", "unchanged", "skipped", "failed")}
     warnings: list[str] = []
     parsed_sessions: dict[str, ParsedSourceSession] = {}
+    policy = retention_policy or ContentRetentionPolicy()
     with closing(open_index(database_path, codex_home=codex_home)) as connection:
+        previous_policy = _indexed_retention_policy(connection)
+        force_content_reparse = (
+            (policy.store_prompts and not previous_policy.store_prompts)
+            or (policy.store_command_text and not previous_policy.store_command_text)
+        )
         run_id = _start_run(connection, codex_home=codex_home, started_at=now)
         try:
             candidates, discovery_warnings = adapter.discover_sessions()
@@ -122,6 +133,7 @@ def index_source(
                     parsed_sessions=parsed_sessions,
                     run_id=run_id,
                     warnings=warnings,
+                    force_reparse=force_content_reparse,
                 )
             _reconcile_repositories(connection)
             relationships, relationship_warnings = _discover_relationships(adapter)
@@ -142,15 +154,20 @@ def index_source(
                 adapter=adapter,
                 codex_home=codex_home,
                 parsed_sessions=parsed_sessions,
+                store_command_text=policy.store_command_text,
             )
             warnings.extend(reconcile_git_commits(connection))
             reconcile_session_outcomes(connection)
-            _reconcile_prompts(
-                connection,
-                adapter=adapter,
-                codex_home=codex_home,
-                parsed_sessions=parsed_sessions,
-            )
+            if policy.store_prompts:
+                _reconcile_prompts(
+                    connection,
+                    adapter=adapter,
+                    codex_home=codex_home,
+                    parsed_sessions=parsed_sessions,
+                )
+            else:
+                with connection:
+                    _sync_prompt_observations(connection)
             reconcile_prompt_features(connection)
             reconcile_task_taxonomy(connection)
             warnings.extend(
@@ -168,6 +185,7 @@ def index_source(
                 discovered=len(candidates),
                 counts=counts,
             )
+            _record_indexed_retention_policy(connection, policy)
         except Exception:
             _finish_run(
                 connection,
@@ -199,6 +217,7 @@ def _index_candidate(
     parsed_sessions: dict[str, ParsedSourceSession],
     run_id: int,
     warnings: list[str],
+    force_reparse: bool,
 ) -> None:
     session = candidate.session
     existing = _existing_session(connection, session)
@@ -245,7 +264,7 @@ def _index_candidate(
         counts["skipped"] += 1
         return
 
-    if existing is not None and _source_unchanged(
+    if not force_reparse and existing is not None and _source_unchanged(
         state,
         candidate,
         parser_version=adapter.parser_version,
@@ -736,6 +755,7 @@ def _reconcile_tool_activity(
     adapter: IndexSourceAdapter,
     codex_home: Path,
     parsed_sessions: dict[str, ParsedSourceSession],
+    store_command_text: bool,
 ) -> None:
     """Persist bounded tool metadata after the shared event provenance pass."""
 
@@ -753,6 +773,21 @@ def _reconcile_tool_activity(
             session_id = session_ids.get(source_session_id)
             if session_id is None:
                 continue
+            existing_text = {
+                (
+                    int(row["source_ordinal"]),
+                    int(row["operation_ordinal"]),
+                    str(row["extraction_version"]),
+                ): (row["command_fingerprint"], row["command_text"])
+                for row in connection.execute(
+                    """
+                    SELECT source_ordinal, operation_ordinal, extraction_version,
+                           command_fingerprint, command_text
+                    FROM tool_activity WHERE observed_session_id = ?
+                    """,
+                    (session_id,),
+                )
+            }
             connection.execute(
                 "DELETE FROM tool_activity WHERE observed_session_id = ?",
                 (session_id,),
@@ -796,20 +831,31 @@ def _reconcile_tool_activity(
                 if output_result is not None:
                     output_row = event_rows.get(output_result.source_ordinal)
                     output_event_id = int(output_row["id"]) if output_row is not None else None
+                retained_text = candidate.command_text if store_command_text else None
+                if not store_command_text and candidate.command_fingerprint is not None:
+                    previous = existing_text.get(
+                        (
+                            candidate.source_ordinal,
+                            candidate.operation_ordinal,
+                            candidate.extraction_version,
+                        )
+                    )
+                    if previous is not None and previous[0] == candidate.command_fingerprint:
+                        retained_text = previous[1]
                 connection.execute(
                     """
                     INSERT INTO tool_activity(
                         event_observation_id, observed_session_id, origin_session_id,
                         source_ordinal, operation_ordinal, occurred_at, tool_family,
                         tool_name, command_category, command_text, command_fingerprint,
-                        executable, test_scope, call_id_digest,
+                        executable, command_operation, test_scope, call_id_digest,
                         output_event_observation_id, exit_code, duration_seconds,
                         result_commit_hash, result_commit_abbrev,
                         result_status, provenance_status, redacted, truncated,
                         extraction_version, classifier_version, updated_at
                     ) VALUES (
                         ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+                        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
                     )
                     """,
                     (
@@ -822,9 +868,10 @@ def _reconcile_tool_activity(
                         candidate.tool_family.value,
                         candidate.tool_name,
                         candidate.command_category.value,
-                        candidate.command_text,
+                        retained_text,
                         candidate.command_fingerprint,
                         candidate.executable,
+                        candidate.command_operation,
                         candidate.test_scope.value,
                         candidate.call_id_digest,
                         output_event_id,
@@ -2667,6 +2714,38 @@ def _format_datetime(value: datetime | None) -> str | None:
 
 def _format_path(value: Path | None) -> str | None:
     return str(value) if value is not None else None
+
+
+def _indexed_retention_policy(connection: sqlite3.Connection) -> ContentRetentionPolicy:
+    row = connection.execute(
+        "SELECT store_prompts, store_command_text FROM content_retention_state "
+        "WHERE singleton = 1"
+    ).fetchone()
+    if row is None:
+        return ContentRetentionPolicy()
+    return ContentRetentionPolicy(
+        store_prompts=bool(row["store_prompts"]),
+        store_command_text=bool(row["store_command_text"]),
+    )
+
+
+def _record_indexed_retention_policy(
+    connection: sqlite3.Connection,
+    policy: ContentRetentionPolicy,
+) -> None:
+    with connection:
+        connection.execute(
+            """
+            INSERT INTO content_retention_state(
+                singleton, store_prompts, store_command_text, indexed_at
+            ) VALUES (1, ?, ?, ?)
+            ON CONFLICT(singleton) DO UPDATE SET
+                store_prompts = excluded.store_prompts,
+                store_command_text = excluded.store_command_text,
+                indexed_at = excluded.indexed_at
+            """,
+            (int(policy.store_prompts), int(policy.store_command_text), _utc_now()),
+        )
 
 
 def _utc_now() -> str:

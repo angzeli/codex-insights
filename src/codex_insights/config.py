@@ -86,3 +86,40 @@ def resolve_index_path(explicit: Path | None = None) -> Path:
     """Resolve an explicit database path or the platform-aware default."""
 
     return _normalized(explicit) if explicit is not None else default_index_path()
+
+
+def default_config_path(
+    *,
+    home: Path | None = None,
+    environ: Mapping[str, str] | None = None,
+    platform_name: str | None = None,
+) -> Path:
+    """Return the platform configuration path for Codex Insights itself."""
+
+    user_home = Path.home() if home is None else home
+    environment = os.environ if environ is None else environ
+    platform = sys.platform if platform_name is None else platform_name
+
+    if platform == "darwin":
+        directory = user_home / "Library" / "Application Support" / "Codex Insights"
+    elif platform == "win32":
+        configured = environment.get("LOCALAPPDATA")
+        directory = (
+            Path(configured) / "Codex Insights"
+            if configured
+            else user_home / "AppData" / "Local" / "Codex Insights"
+        )
+    else:
+        configured = environment.get("XDG_CONFIG_HOME")
+        directory = (
+            Path(configured) / "codex-insights"
+            if configured
+            else user_home / ".config" / "codex-insights"
+        )
+    return _normalized(directory / "config.json")
+
+
+def resolve_config_path(explicit: Path | None = None) -> Path:
+    """Resolve an explicit privacy-config path or the platform-aware default."""
+
+    return _normalized(explicit) if explicit is not None else default_config_path()

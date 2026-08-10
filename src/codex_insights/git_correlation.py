@@ -117,7 +117,7 @@ def _session_associations(
         row
         for row in connection.execute(
             """
-            SELECT occurred_at, source_ordinal, command_text, result_status,
+            SELECT occurred_at, source_ordinal, command_text, command_operation, result_status,
                    result_commit_hash, result_commit_abbrev
             FROM tool_activity
             WHERE observed_session_id = ? AND origin_session_id = ?
@@ -126,8 +126,11 @@ def _session_associations(
             """,
             (session_id, session_id),
         )
-        if row["command_text"] is not None
-        and is_git_commit_command(str(row["command_text"]))
+        if row["command_operation"] == "git_commit"
+        or (
+            row["command_text"] is not None
+            and is_git_commit_command(str(row["command_text"]))
+        )
     ]
     selected: dict[str, CommitAssociation] = {}
     for action in actions:

@@ -26,7 +26,7 @@ runner = CliRunner()
 def test_command_privacy_and_test_scope_are_conservative() -> None:
     secret = normalize_command(
         "TOKEN=secret-value curl 'https://example.test/api?token=url-secret' "
-        "-H 'Authorization: Bearer header-secret'"
+        "-H 'Authorization: Bearer header-secret' --password cli-secret"
     )
     full = normalize_command("pytest")
     file_scope = normalize_command("pytest tests/test_tools.py")
@@ -36,6 +36,7 @@ def test_command_privacy_and_test_scope_are_conservative() -> None:
     assert "secret-value" not in secret.text
     assert "url-secret" not in secret.text
     assert "header-secret" not in secret.text
+    assert "cli-secret" not in secret.text
     assert secret.redacted
     assert full.test_scope is CommandTestScope.FULL_SUITE
     assert file_scope.test_scope is CommandTestScope.FILE

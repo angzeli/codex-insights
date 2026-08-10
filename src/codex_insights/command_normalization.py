@@ -21,6 +21,10 @@ _SECRET_PATTERNS = (
         r"(?i)((?:api[_-]?key|token|secret|password|passwd|pwd)\s*[=:]\s*)"
         r"([^\s;&|]+)",
     ),
+    re.compile(
+        r"(?i)((?:--?)(?:api[_-]?key|token|secret|password|passwd|pwd)\s+)"
+        r"([^\s;&|]+)",
+    ),
     re.compile(r"(?i)(https?://[^\s/?#]+[^\s?#]*[?&][^\s=]*(?:token|key|secret)=)[^\s&]+"),
 )
 _HEREDOC = re.compile(r"(?s)(<<-?\s*['\"]?([A-Za-z_][A-Za-z0-9_]*)['\"]?).*?\n\2(?:\s|$)")
@@ -76,6 +80,7 @@ class SafeCommand:
     text: str
     fingerprint: str
     executable: str | None
+    operation: str | None
     category: CommandCategory
     test_scope: TestScope
     redacted: bool
@@ -100,11 +105,13 @@ def normalize_command(command: str) -> SafeCommand:
     executable = _executable(tokens)
     category = classify_command(tokens, executable=executable)
     scope = classify_test_scope(tokens, executable=executable)
+    operation = _privacy_safe_operation(tokens, executable=executable)
     digest = hashlib.sha256(safe.encode("utf-8", errors="replace")).hexdigest()
     return SafeCommand(
         text=safe,
         fingerprint=digest,
         executable=executable,
+        operation=operation,
         category=category,
         test_scope=scope,
         redacted=redacted,
@@ -233,6 +240,24 @@ def _executable(tokens: tuple[str, ...]) -> str | None:
 
 def _first_positional(tokens: tuple[str, ...]) -> str | None:
     return next((token for token in tokens if not token.startswith("-")), None)
+
+
+def _privacy_safe_operation(
+    tokens: tuple[str, ...],
+    *,
+    executable: str | None,
+) -> str | None:
+    """Retain only the non-sensitive operation needed for derived Git provenance."""
+
+    if executable != "git":
+        return None
+    command_index = _command_index(tuple(token.casefold() for token in tokens))
+    if command_index is None:
+        return None
+    subcommand = _first_positional(
+        tuple(token.casefold() for token in tokens[command_index + 1 :])
+    )
+    return "git_commit" if subcommand == "commit" else None
 
 
 def _is_test_command(name: str, args: tuple[str, ...]) -> bool:

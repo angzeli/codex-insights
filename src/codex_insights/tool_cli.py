@@ -199,7 +199,7 @@ def _emit(report: ToolActivityReport, *, json_output: bool, title: str) -> None:
                 f"{item.invocation_count:,}",
                 f"{item.session_count:,}",
                 item.category,
-                item.command + suffix,
+                (item.command or "[command text not retained]") + suffix,
             )
         console.print(repeated)
 

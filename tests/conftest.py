@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import shutil
 import sqlite3
 from pathlib import Path
@@ -26,6 +27,82 @@ def synthetic_audit_home(tmp_path: Path) -> Path:
     schema = (fixture_root / "state_fixture.sql").read_text(encoding="utf-8")
     with sqlite3.connect(codex_home / "state_7.sqlite") as connection:
         connection.executescript(schema)
+    return codex_home
+
+
+@pytest.fixture
+def privacy_source_home(tmp_path: Path) -> Path:
+    """Create one synthetic source with a prompt and a Git command."""
+
+    codex_home = tmp_path / "privacy-codex-home"
+    sessions = codex_home / "sessions"
+    sessions.mkdir(parents=True)
+    records = (
+        {
+            "timestamp": "2026-08-10T00:00:00Z",
+            "type": "session_meta",
+            "payload": {
+                "id": "privacy-session",
+                "cwd": "/synthetic/privacy-project",
+                "source": "vscode",
+                "model": "synthetic-model",
+            },
+        },
+        {
+            "timestamp": "2026-08-10T00:00:01Z",
+            "type": "response_item",
+            "payload": {
+                "type": "message",
+                "role": "user",
+                "id": "privacy-prompt",
+                "content": [
+                    {
+                        "type": "input_text",
+                        "text": "=SUM(A1:A2) TOKEN=synthetic-secret-value",
+                    }
+                ],
+            },
+        },
+        {
+            "timestamp": "2026-08-10T00:00:02Z",
+            "type": "response_item",
+            "payload": {
+                "type": "function_call",
+                "name": "exec_command",
+                "call_id": "privacy-call",
+                "arguments": json.dumps(
+                    {"cmd": "git commit -m '=SUM(A1:A2)' --password synthetic-secret"}
+                ),
+            },
+        },
+        {
+            "timestamp": "2026-08-10T00:00:03Z",
+            "type": "response_item",
+            "payload": {
+                "type": "function_call_output",
+                "call_id": "privacy-call",
+                "output": json.dumps({"exit_code": 0, "output": "not persisted"}),
+            },
+        },
+    )
+    (sessions / "privacy.jsonl").write_text(
+        "".join(json.dumps(record) + "\n" for record in records),
+        encoding="utf-8",
+    )
+    with sqlite3.connect(codex_home / "state_9.sqlite") as connection:
+        connection.executescript(
+            """
+            CREATE TABLE threads (
+                id TEXT PRIMARY KEY, rollout_path TEXT NOT NULL, created_at TEXT,
+                updated_at TEXT, source TEXT, cwd TEXT, model TEXT, archived INTEGER
+            );
+            INSERT INTO threads VALUES (
+                'privacy-session', 'sessions/privacy.jsonl',
+                '2026-08-10T00:00:00Z', '2026-08-10T00:00:03Z',
+                'vscode', '/synthetic/privacy-project', 'synthetic-model', 0
+            );
+            """
+        )
     return codex_home
 
 

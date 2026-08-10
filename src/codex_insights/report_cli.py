@@ -12,6 +12,7 @@ from codex_insights.analytics.reports import ReportKind, build_analytics_report
 from codex_insights.analytics.usage import TimezoneError, resolve_timezone
 from codex_insights.config import resolve_codex_home, resolve_index_path
 from codex_insights.db import UnsafeDatabasePathError
+from codex_insights.path_safety import atomic_write_text, validate_write_target
 from codex_insights.reporting import ReportFormat, render_report
 
 report_app = typer.Typer(help="Generate privacy-safe periodic analytics reports.")
@@ -102,8 +103,16 @@ def _report_command(
         zone = resolve_timezone(timezone)
         anchor = date.fromisoformat(report_date) if report_date else None
         resolved_database = resolve_index_path(database)
-        if output is not None:
-            _ensure_output_safe(output, resolved_home, resolved_database)
+        destination = (
+            validate_write_target(
+                output,
+                codex_home=resolved_home,
+                operation="Report output",
+                protected_paths=(resolved_database,),
+            )
+            if output is not None
+            else None
+        )
         report = build_analytics_report(
             resolved_database,
             codex_home=resolved_home,
@@ -124,16 +133,6 @@ def _report_command(
     if output is None:
         typer.echo(rendered, nl=False)
         return
-    destination = output.expanduser().resolve(strict=False)
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    destination.write_text(rendered, encoding="utf-8")
+    assert destination is not None
+    atomic_write_text(destination, rendered, overwrite=True, create_parents=True)
     typer.echo(f"Wrote {report_format.value} report: {destination}")
-
-
-def _ensure_output_safe(output: Path, codex_home: Path, database: Path) -> None:
-    destination = output.expanduser().resolve(strict=False)
-    source = codex_home.expanduser().resolve(strict=False)
-    if destination == source or source in destination.parents:
-        raise ValueError(f"Report output cannot be inside Codex home: {source}")
-    if destination == database.expanduser().resolve(strict=False):
-        raise ValueError("Report output cannot overwrite the Codex Insights database")
