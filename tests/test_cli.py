@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -66,6 +67,15 @@ def test_version_smoke() -> None:
 
     assert result.exit_code == 0
     assert f"Codex Insights {__version__}" in result.stdout
+
+
+def test_package_and_project_versions_are_consistent() -> None:
+    metadata = tomllib.loads(
+        (Path(__file__).parents[1] / "pyproject.toml").read_text(encoding="utf-8")
+    )
+
+    assert __version__ == "1.0.0"
+    assert metadata["project"]["version"] == __version__
 
 
 def test_doctor_uses_synthetic_codex_home(synthetic_codex_home: Path) -> None:

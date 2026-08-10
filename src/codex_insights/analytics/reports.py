@@ -9,6 +9,7 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
+from codex_insights import __version__
 from codex_insights.analytics.git import GitFilters, get_commit_report
 from codex_insights.analytics.outcomes import OutcomeFilters, get_outcome_report
 from codex_insights.analytics.queries import SessionFilters, list_sessions
@@ -79,6 +80,7 @@ class AnalyticsReport:
     def to_dict(self) -> dict[str, object]:
         return {
             "schema_version": REPORT_SCHEMA_VERSION,
+            "application_version": __version__,
             "report_kind": self.kind.value,
             "generated_at": _json_datetime(self.generated_at),
             "timezone": self.timezone,
