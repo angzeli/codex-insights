@@ -74,6 +74,12 @@ def test_index_schema_is_versioned_and_normalized(tmp_path: Path) -> None:
         "prompts",
         "prompt_observations",
         "prompts_fts",
+        "source_compatibility",
+        "session_compatibility",
+        "session_capabilities",
+        "unknown_source_records",
+        "compatibility_warnings",
+        "coverage_snapshots",
     } <= tables
     assert "accounted_usage" in views
 
@@ -134,9 +140,18 @@ def test_current_v01_database_migrates_to_lineage_schema_without_losing_usage(
             row[0]
             for row in connection.execute("SELECT name FROM sqlite_schema WHERE type = 'table'")
         }
+        compatibility = connection.execute(
+            """
+            SELECT parser_version, parse_status, stale
+            FROM session_compatibility
+            WHERE source_session_id = ?
+            """,
+            (session_id,),
+        ).fetchone()
 
     assert version == SCHEMA_VERSION
     assert tuple(observed) == (100, 100)
+    assert tuple(compatibility) == ("legacy-unknown", "legacy_migrated", 0)
     assert {
         "thread_relationships",
         "token_lineage",

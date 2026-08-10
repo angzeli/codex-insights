@@ -11,6 +11,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Protocol, cast
 
+from codex_insights.adapters.base import SourceChangedDuringParseError
 from codex_insights.db import open_index
 from codex_insights.git_correlation import reconcile_git_commits
 from codex_insights.lineage import (
@@ -19,6 +20,8 @@ from codex_insights.lineage import (
     assess_token_lineage,
 )
 from codex_insights.models import (
+    CapabilityObservation,
+    CapabilityStatus,
     EventFamily,
     EventProvenanceStatus,
     NormalizedEventObservation,
@@ -27,11 +30,12 @@ from codex_insights.models import (
     NormalizedToolResultCandidate,
     NormalizedUsage,
     ParsedSourceSession,
+    SourceCapability,
     SourceSessionCandidate,
     TokenLineageAssessment,
     UsageVector,
 )
-from codex_insights.outcomes import reconcile_session_outcomes
+from codex_insights.outcomes import OUTCOME_CLASSIFIER_VERSION, reconcile_session_outcomes
 from codex_insights.privacy import PROMPT_CONTENT_SCHEMA_VERSION, redact_prompt
 from codex_insights.prompt_features import reconcile_prompt_features
 from codex_insights.provenance import (
@@ -45,7 +49,11 @@ from codex_insights.repository_identity import (
     RepositoryIdentity,
     resolve_repository_identity,
 )
-from codex_insights.taxonomy import reconcile_task_taxonomy
+from codex_insights.taxonomy import TASK_TAXONOMY_VERSION, reconcile_task_taxonomy
+
+MIN_COVERAGE_BASELINE_SESSIONS = 10
+COVERAGE_REGRESSION_ABSOLUTE_DROP = 0.35
+COVERAGE_REGRESSION_RELATIVE_RATIO = 0.50
 
 
 class IndexSourceAdapter(Protocol):
@@ -99,6 +107,12 @@ def index_source(
         try:
             candidates, discovery_warnings = adapter.discover_sessions()
             warnings.extend(discovery_warnings)
+            _record_source_compatibility(
+                connection,
+                adapter=adapter,
+                codex_home=codex_home,
+                candidates=candidates,
+            )
             for candidate in candidates:
                 _index_candidate(
                     connection,
@@ -106,6 +120,8 @@ def index_source(
                     candidate=candidate,
                     counts=counts,
                     parsed_sessions=parsed_sessions,
+                    run_id=run_id,
+                    warnings=warnings,
                 )
             _reconcile_repositories(connection)
             relationships, relationship_warnings = _discover_relationships(adapter)
@@ -136,6 +152,14 @@ def index_source(
             )
             reconcile_prompt_features(connection)
             reconcile_task_taxonomy(connection)
+            warnings.extend(
+                _record_coverage_snapshots(
+                    connection,
+                    run_id=run_id,
+                    adapter=adapter,
+                    codex_home=codex_home,
+                )
+            )
             _finish_run(
                 connection,
                 run_id=run_id,
@@ -172,6 +196,8 @@ def _index_candidate(
     candidate: SourceSessionCandidate,
     counts: dict[str, int],
     parsed_sessions: dict[str, ParsedSourceSession],
+    run_id: int,
+    warnings: list[str],
 ) -> None:
     session = candidate.session
     existing = _existing_session(connection, session)
@@ -197,6 +223,23 @@ def _index_candidate(
                     status=status,
                     error=None,
                     parsed_byte_offset=None,
+                    successful=False,
+                    stale=existing is not None,
+                )
+            _upsert_session_compatibility_status(
+                connection,
+                session_id=session_id,
+                candidate=candidate,
+                parser_version=adapter.parser_version,
+                status=status,
+                stale=existing is not None,
+            )
+            if is_new:
+                _replace_session_capabilities(
+                    connection,
+                    session_id=session_id,
+                    capabilities=candidate.capabilities,
+                    parser_version=adapter.parser_version,
                 )
         counts["skipped"] += 1
         return
@@ -212,42 +255,167 @@ def _index_candidate(
         return
 
     try:
-        parsed = adapter.parse_session(candidate)
-        parsed_sessions[session.source_session_id] = parsed
+        effective_candidate, parsed = _parse_with_retry(adapter, candidate)
+        if parsed.partial_final_line and existing is not None and _has_previous_good(state):
+            with connection:
+                _upsert_ingestion_state(
+                    connection,
+                    effective_candidate,
+                    parser_version=adapter.parser_version,
+                    status="pending_partial_write",
+                    error="PartialFinalLine",
+                    parsed_byte_offset=None,
+                    successful=False,
+                    stale=True,
+                )
+                session_id = int(existing["id"])
+                _upsert_session_compatibility_status(
+                    connection,
+                    session_id=session_id,
+                    candidate=effective_candidate,
+                    parser_version=adapter.parser_version,
+                    status="pending_partial_write",
+                    stale=True,
+                )
+            counts["skipped"] += 1
+            return
         status = (
             "indexed_with_warnings"
-            if parsed.malformed_line_count or parsed.oversized_line_count
+            if parsed.malformed_line_count
+            or parsed.oversized_line_count
+            or parsed.semantic_warnings
             else "indexed"
         )
+        if parsed.partial_final_line:
+            status = "indexed_partial"
         warning = _parse_warning(parsed)
         with connection:
             session_id, is_new, _ = _upsert_session_metadata(connection, parsed.session)
             _replace_usage(connection, session_id, parsed.session.usage)
             _replace_event_summary(connection, session_id, parsed.session)
             _replace_event_observations(connection, session_id, parsed)
+            _replace_session_capabilities(
+                connection,
+                session_id=session_id,
+                capabilities=parsed.capabilities,
+                parser_version=adapter.parser_version,
+            )
+            _replace_unknown_source_records(
+                connection,
+                session_id=session_id,
+                parsed=parsed,
+                parser_version=adapter.parser_version,
+            )
+            _upsert_session_compatibility_success(
+                connection,
+                session_id=session_id,
+                candidate=effective_candidate,
+                parsed=parsed,
+                parser_version=adapter.parser_version,
+                status=status,
+            )
+            _insert_semantic_warnings(
+                connection,
+                run_id=run_id,
+                session_id=session_id,
+                parsed=parsed,
+                parser_version=adapter.parser_version,
+            )
+            _upsert_ingestion_state(
+                connection,
+                effective_candidate,
+                parser_version=adapter.parser_version,
+                status=status,
+                error=warning,
+                parsed_byte_offset=parsed.parsed_byte_count,
+                successful=True,
+                stale=parsed.partial_final_line,
+            )
+        parsed_sessions[session.source_session_id] = parsed
+        warnings.extend(
+            f"{session.source_session_id}: {item.code} ({item.count})."
+            for item in parsed.semantic_warnings
+        )
+        counts["new" if is_new else "updated"] += 1
+    except Exception as exc:
+        with connection:
+            if existing is None:
+                session_id, is_new, _ = _upsert_session_metadata(
+                    connection, catalogue_session
+                )
+            else:
+                session_id, is_new = int(existing["id"]), False
+            if is_new:
+                _replace_usage(connection, session_id, NormalizedUsage())
+                _replace_session_capabilities(
+                    connection,
+                    session_id=session_id,
+                    capabilities=candidate.capabilities,
+                    parser_version=adapter.parser_version,
+                )
+            status = (
+                "pending_source_change"
+                if isinstance(exc, SourceChangedDuringParseError)
+                else "failed"
+            )
             _upsert_ingestion_state(
                 connection,
                 candidate,
                 parser_version=adapter.parser_version,
                 status=status,
-                error=warning,
-                parsed_byte_offset=parsed.parsed_byte_count,
-            )
-        counts["new" if is_new else "updated"] += 1
-    except Exception as exc:
-        with connection:
-            session_id, is_new, _ = _upsert_session_metadata(connection, catalogue_session)
-            if is_new:
-                _replace_usage(connection, session_id, NormalizedUsage())
-            _upsert_ingestion_state(
-                connection,
-                candidate,
-                parser_version=adapter.parser_version,
-                status="failed",
                 error=type(exc).__name__,
                 parsed_byte_offset=None,
+                successful=False,
+                stale=existing is not None,
+            )
+            _upsert_session_compatibility_status(
+                connection,
+                session_id=session_id,
+                candidate=candidate,
+                parser_version=adapter.parser_version,
+                status=status,
+                stale=existing is not None,
             )
         counts["failed"] += 1
+
+
+def _parse_with_retry(
+    adapter: IndexSourceAdapter,
+    candidate: SourceSessionCandidate,
+) -> tuple[SourceSessionCandidate, ParsedSourceSession]:
+    effective = _refresh_candidate_identity(candidate)
+    for attempt in range(2):
+        try:
+            return effective, adapter.parse_session(effective)
+        except SourceChangedDuringParseError:
+            if attempt:
+                raise
+            effective = _refresh_candidate_identity(effective)
+    raise AssertionError("unreachable")
+
+
+def _refresh_candidate_identity(candidate: SourceSessionCandidate) -> SourceSessionCandidate:
+    path = candidate.session.source_path
+    if path is None:
+        return candidate
+    stat = path.stat()
+    return replace(
+        candidate,
+        rollout_exists=path.is_file(),
+        size_bytes=int(stat.st_size),
+        mtime_ns=int(stat.st_mtime_ns),
+        file_identity=f"{stat.st_dev}:{stat.st_ino}",
+    )
+
+
+def _has_previous_good(state: sqlite3.Row | None) -> bool:
+    return bool(
+        state is not None
+        and (
+            state["last_successful_parse_at"]
+            or str(state["status"]).startswith("indexed")
+        )
+    )
 
 
 def _discover_relationships(
@@ -392,6 +560,18 @@ def _reconcile_relationships(
             (adapter.name, source_home),
         )
     }
+    parseable_source_ids = {
+        str(row["source_session_id"])
+        for row in connection.execute(
+            """
+            SELECT source_session_id FROM ingestion_state
+            WHERE source_home = ? AND status LIKE 'indexed%'
+              AND stale = 0
+              AND source_session_id IS NOT NULL
+            """,
+            (source_home,),
+        )
+    }
     existing_keys = {
         (
             str(row["parent_source_session_id"]),
@@ -481,12 +661,16 @@ def _reconcile_relationships(
         else:
             parent = _parse_for_lineage(
                 adapter,
-                candidates_by_id.get(relationship.parent_source_session_id),
+                candidates_by_id.get(relationship.parent_source_session_id)
+                if relationship.parent_source_session_id in parseable_source_ids
+                else None,
                 parse_cache,
             )
             child = _parse_for_lineage(
                 adapter,
-                candidates_by_id.get(relationship.child_source_session_id),
+                candidates_by_id.get(relationship.child_source_session_id)
+                if relationship.child_source_session_id in parseable_source_ids
+                else None,
                 parse_cache,
             )
             assessment = assess_token_lineage(
@@ -1693,6 +1877,514 @@ def _replace_event_observations(
     )
 
 
+def _record_source_compatibility(
+    connection: sqlite3.Connection,
+    *,
+    adapter: IndexSourceAdapter,
+    codex_home: Path,
+    candidates: tuple[SourceSessionCandidate, ...],
+) -> None:
+    selection_method = getattr(adapter, "state_database_selection", None)
+    selected_path: str | None = None
+    reason = "Adapter did not expose state database selection evidence."
+    alternatives: list[dict[str, object]] = []
+    fingerprint: str | None = None
+    hints: tuple[str, ...] = ()
+    if callable(selection_method):
+        selection = selection_method()
+        selected = getattr(selection, "selected", None)
+        reason = str(getattr(selection, "explanation", reason))
+        if selected is not None:
+            selected_path = str(selected.path)
+            fingerprint = str(selected.schema_fingerprint or "") or None
+            hints = tuple(str(item) for item in selected.schema_hints)
+        alternatives = [
+            {
+                "path": str(item.path),
+                "score": int(item.score),
+                "readable": bool(item.readable),
+                "catalogue_table": item.catalogue_table,
+                "valid_rollout_references": int(item.valid_rollout_references),
+                "missing_rollout_references": int(item.missing_rollout_references),
+            }
+            for item in selection.candidates
+            if selected is None or item.path != selected.path
+        ]
+    elif candidates:
+        selected_path = _format_path(candidates[0].session.source_db_path)
+        fingerprint = candidates[0].source_schema_fingerprint or None
+        hints = candidates[0].source_schema_hints
+        reason = "Selected database was inferred from normalized catalogue candidates."
+
+    with connection:
+        connection.execute(
+            """
+            INSERT INTO source_compatibility(
+                source_type, source_home, parser_version, selected_state_db_path,
+                selection_reason, alternatives_json, source_schema_fingerprint,
+                source_schema_hints_json, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(source_type, source_home) DO UPDATE SET
+                parser_version = excluded.parser_version,
+                selected_state_db_path = excluded.selected_state_db_path,
+                selection_reason = excluded.selection_reason,
+                alternatives_json = excluded.alternatives_json,
+                source_schema_fingerprint = excluded.source_schema_fingerprint,
+                source_schema_hints_json = excluded.source_schema_hints_json,
+                updated_at = excluded.updated_at
+            """,
+            (
+                adapter.name,
+                str(codex_home.expanduser().resolve(strict=False)),
+                adapter.parser_version,
+                selected_path,
+                reason,
+                json.dumps(alternatives, sort_keys=True, separators=(",", ":")),
+                fingerprint,
+                json.dumps(hints, separators=(",", ":")),
+                _utc_now(),
+            ),
+        )
+
+
+def _replace_session_capabilities(
+    connection: sqlite3.Connection,
+    *,
+    session_id: int,
+    capabilities: tuple[CapabilityObservation, ...],
+    parser_version: str,
+) -> None:
+    connection.execute(
+        "DELETE FROM session_capabilities WHERE source_session_id = ?",
+        (session_id,),
+    )
+    now = _utc_now()
+    connection.executemany(
+        """
+        INSERT INTO session_capabilities(
+            source_session_id, capability, status, evidence_count,
+            evidence_type, parser_version, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            (
+                session_id,
+                item.capability.value,
+                item.status.value,
+                item.evidence_count,
+                item.evidence_type,
+                parser_version,
+                now,
+            )
+            for item in capabilities
+        ),
+    )
+
+
+def _upsert_session_compatibility_success(
+    connection: sqlite3.Connection,
+    *,
+    session_id: int,
+    candidate: SourceSessionCandidate,
+    parsed: ParsedSourceSession,
+    parser_version: str,
+    status: str,
+) -> None:
+    now = _utc_now()
+    capability_set = {
+        item.capability.value: item.status.value for item in parsed.capabilities
+    }
+    event_fingerprint_version = next(
+        (
+            item.fingerprint_version
+            for item in parsed.event_observations
+            if item.fingerprint_version
+        ),
+        "unavailable",
+    )
+    values = (
+        candidate.session.source_type,
+        _format_path(candidate.session.source_db_path),
+        _format_path(candidate.session.source_path),
+        parser_version,
+        parsed.source_schema_fingerprint or candidate.source_schema_fingerprint or None,
+        json.dumps(parsed.source_schema_hints, separators=(",", ":")),
+        json.dumps(capability_set, sort_keys=True, separators=(",", ":")),
+        event_fingerprint_version,
+        LINEAGE_ALGORITHM_VERSION,
+        PROVENANCE_ALGORITHM_VERSION,
+        OUTCOME_CLASSIFIER_VERSION,
+        TASK_TAXONOMY_VERSION,
+        now,
+        now,
+        status,
+        int(parsed.partial_final_line),
+    )
+    connection.execute(
+        """
+        INSERT INTO session_compatibility(
+            source_session_id, source_type, source_db_path, source_path,
+            parser_version, source_schema_fingerprint, source_schema_hints_json,
+            capability_set_json, event_fingerprint_version,
+            token_lineage_algorithm_version, provenance_algorithm_version,
+            outcome_classifier_version, task_classifier_version, indexed_at,
+            last_successful_parse_at, parse_status, stale
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(source_session_id) DO UPDATE SET
+            source_type = excluded.source_type,
+            source_db_path = excluded.source_db_path,
+            source_path = excluded.source_path,
+            parser_version = excluded.parser_version,
+            source_schema_fingerprint = excluded.source_schema_fingerprint,
+            source_schema_hints_json = excluded.source_schema_hints_json,
+            capability_set_json = excluded.capability_set_json,
+            event_fingerprint_version = excluded.event_fingerprint_version,
+            token_lineage_algorithm_version = excluded.token_lineage_algorithm_version,
+            provenance_algorithm_version = excluded.provenance_algorithm_version,
+            outcome_classifier_version = excluded.outcome_classifier_version,
+            task_classifier_version = excluded.task_classifier_version,
+            indexed_at = excluded.indexed_at,
+            last_successful_parse_at = excluded.last_successful_parse_at,
+            parse_status = excluded.parse_status,
+            stale = excluded.stale
+        """,
+        (session_id, *values),
+    )
+
+
+def _upsert_session_compatibility_status(
+    connection: sqlite3.Connection,
+    *,
+    session_id: int,
+    candidate: SourceSessionCandidate,
+    parser_version: str,
+    status: str,
+    stale: bool,
+) -> None:
+    now = _utc_now()
+    capability_set = {
+        item.capability.value: item.status.value for item in candidate.capabilities
+    }
+    connection.execute(
+        """
+        INSERT INTO session_compatibility(
+            source_session_id, source_type, source_db_path, source_path,
+            parser_version, source_schema_fingerprint, source_schema_hints_json,
+            capability_set_json, event_fingerprint_version,
+            token_lineage_algorithm_version, provenance_algorithm_version,
+            outcome_classifier_version, task_classifier_version, indexed_at,
+            last_successful_parse_at, parse_status, stale
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'unavailable', ?, ?, ?, ?, ?, NULL, ?, ?)
+        ON CONFLICT(source_session_id) DO UPDATE SET
+            source_db_path = excluded.source_db_path,
+            source_path = excluded.source_path,
+            indexed_at = excluded.indexed_at,
+            parse_status = excluded.parse_status,
+            stale = excluded.stale
+        """,
+        (
+            session_id,
+            candidate.session.source_type,
+            _format_path(candidate.session.source_db_path),
+            _format_path(candidate.session.source_path),
+            parser_version,
+            candidate.source_schema_fingerprint or None,
+            json.dumps(candidate.source_schema_hints, separators=(",", ":")),
+            json.dumps(capability_set, sort_keys=True, separators=(",", ":")),
+            LINEAGE_ALGORITHM_VERSION,
+            PROVENANCE_ALGORITHM_VERSION,
+            OUTCOME_CLASSIFIER_VERSION,
+            TASK_TAXONOMY_VERSION,
+            now,
+            status,
+            int(stale),
+        ),
+    )
+
+
+def _replace_unknown_source_records(
+    connection: sqlite3.Connection,
+    *,
+    session_id: int,
+    parsed: ParsedSourceSession,
+    parser_version: str,
+) -> None:
+    connection.execute(
+        "DELETE FROM unknown_source_records WHERE source_session_id = ?",
+        (session_id,),
+    )
+    now = _utc_now()
+    connection.executemany(
+        """
+        INSERT INTO unknown_source_records(
+            source_session_id, unknown_kind, unknown_name, record_count,
+            parser_version, source_schema_fingerprint, first_seen_at,
+            last_seen_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            (
+                session_id,
+                item.kind,
+                item.name,
+                item.count,
+                parser_version,
+                parsed.source_schema_fingerprint or None,
+                _format_datetime(item.first_seen_at),
+                _format_datetime(item.last_seen_at),
+                now,
+            )
+            for item in parsed.unknown_source_records
+        ),
+    )
+
+
+def _insert_semantic_warnings(
+    connection: sqlite3.Connection,
+    *,
+    run_id: int,
+    session_id: int,
+    parsed: ParsedSourceSession,
+    parser_version: str,
+) -> None:
+    connection.executemany(
+        """
+        INSERT INTO compatibility_warnings(
+            index_run_id, source_session_id, warning_code, severity,
+            warning_count, message, parser_version, created_at
+        ) VALUES (?, ?, ?, 'warning', ?, ?, ?, ?)
+        """,
+        (
+            (
+                run_id,
+                session_id,
+                item.code,
+                item.count,
+                item.detail,
+                parser_version,
+                _utc_now(),
+            )
+            for item in parsed.semantic_warnings
+        ),
+    )
+
+
+def _record_coverage_snapshots(
+    connection: sqlite3.Connection,
+    *,
+    run_id: int,
+    adapter: IndexSourceAdapter,
+    codex_home: Path,
+) -> tuple[str, ...]:
+    source_home = str(codex_home.expanduser().resolve(strict=False))
+    _refresh_derived_capabilities(
+        connection,
+        source_type=adapter.name,
+        source_home=source_home,
+        parser_version=adapter.parser_version,
+    )
+    previous_run = connection.execute(
+        """
+        SELECT MAX(id) FROM index_runs
+        WHERE status = 'completed' AND source_home = ? AND id < ?
+        """,
+        (source_home, run_id),
+    ).fetchone()[0]
+    warnings: list[str] = []
+    now = _utc_now()
+    with connection:
+        for capability in SourceCapability:
+            row = connection.execute(
+                """
+                SELECT COUNT(sessions.id) AS total_count,
+                       SUM(CASE WHEN caps.status = 'available' THEN 1 ELSE 0 END)
+                           AS available_count,
+                       SUM(CASE WHEN caps.status = 'degraded' THEN 1 ELSE 0 END)
+                           AS degraded_count,
+                       SUM(CASE WHEN caps.status = 'not_observed' THEN 1 ELSE 0 END)
+                           AS not_observed_count,
+                       SUM(CASE WHEN caps.status IS NULL OR caps.status = 'unknown'
+                                THEN 1 ELSE 0 END) AS unknown_count
+                FROM source_sessions AS sessions
+                LEFT JOIN session_capabilities AS caps
+                  ON caps.source_session_id = sessions.id AND caps.capability = ?
+                WHERE sessions.source_type = ? AND sessions.source_home = ?
+                """,
+                (capability.value, adapter.name, source_home),
+            ).fetchone()
+            total = int(row["total_count"] or 0)
+            available = int(row["available_count"] or 0)
+            degraded = int(row["degraded_count"] or 0)
+            not_observed = int(row["not_observed_count"] or 0)
+            unknown = int(row["unknown_count"] or 0)
+            ratio = available / total if total else None
+            connection.execute(
+                """
+                INSERT INTO coverage_snapshots(
+                    index_run_id, capability, available_count, degraded_count,
+                    not_observed_count, unknown_count, total_count,
+                    coverage_ratio, recorded_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    run_id,
+                    capability.value,
+                    available,
+                    degraded,
+                    not_observed,
+                    unknown,
+                    total,
+                    ratio,
+                    now,
+                ),
+            )
+            previous = (
+                connection.execute(
+                    """
+                    SELECT coverage_ratio, total_count FROM coverage_snapshots
+                    WHERE index_run_id = ? AND capability = ?
+                    """,
+                    (previous_run, capability.value),
+                ).fetchone()
+                if previous_run is not None
+                else None
+            )
+            if _is_coverage_regression(previous, ratio):
+                assert previous is not None
+                assert ratio is not None
+                previous_ratio = float(previous["coverage_ratio"])
+                message = (
+                    f"{capability.value} coverage fell from {previous_ratio:.1%} "
+                    f"to {ratio:.1%}."
+                )
+                warnings.append(message)
+                connection.execute(
+                    """
+                    INSERT INTO compatibility_warnings(
+                        index_run_id, warning_code, severity, warning_count,
+                        message, parser_version, created_at
+                    ) VALUES (?, ?, 'warning', 1, ?, ?, ?)
+                    """,
+                    (
+                        run_id,
+                        f"coverage_regression:{capability.value}",
+                        message,
+                        adapter.parser_version,
+                        now,
+                    ),
+                )
+    return tuple(warnings)
+
+
+def _refresh_derived_capabilities(
+    connection: sqlite3.Connection,
+    *,
+    source_type: str,
+    source_home: str,
+    parser_version: str,
+) -> None:
+    rows = connection.execute(
+        """
+        SELECT sessions.id, sessions.repository_id, sessions.model,
+               COUNT(events.id) AS event_count,
+               SUM(CASE WHEN events.provenance_status IN (
+                    'origin', 'inherited_exact', 'inherited_prefix'
+               ) THEN 1 ELSE 0 END) AS resolved_event_count
+        FROM source_sessions AS sessions
+        LEFT JOIN event_observations AS events ON events.observed_session_id = sessions.id
+        WHERE sessions.source_type = ? AND sessions.source_home = ?
+        GROUP BY sessions.id
+        """,
+        (source_type, source_home),
+    ).fetchall()
+    now = _utc_now()
+    with connection:
+        for row in rows:
+            session_id = int(row["id"])
+            event_count = int(row["event_count"] or 0)
+            resolved = int(row["resolved_event_count"] or 0)
+            provenance_status = (
+                CapabilityStatus.AVAILABLE
+                if resolved
+                else (
+                    CapabilityStatus.DEGRADED
+                    if event_count
+                    else CapabilityStatus.NOT_OBSERVED
+                )
+            )
+            derived = (
+                CapabilityObservation(
+                    SourceCapability.REPOSITORY_ATTRIBUTION,
+                    CapabilityStatus.AVAILABLE
+                    if row["repository_id"] is not None
+                    else CapabilityStatus.NOT_OBSERVED,
+                    evidence_count=int(row["repository_id"] is not None),
+                    evidence_type="normalized_repository_identity"
+                    if row["repository_id"] is not None
+                    else "not_observed",
+                ),
+                CapabilityObservation(
+                    SourceCapability.MODEL_ATTRIBUTION,
+                    CapabilityStatus.AVAILABLE
+                    if row["model"] is not None
+                    else CapabilityStatus.NOT_OBSERVED,
+                    evidence_count=int(row["model"] is not None),
+                    evidence_type="normalized_model"
+                    if row["model"] is not None
+                    else "not_observed",
+                ),
+                CapabilityObservation(
+                    SourceCapability.PROVENANCE_MATCHING,
+                    provenance_status,
+                    evidence_count=resolved,
+                    evidence_type="resolved_event_fingerprints"
+                    if resolved
+                    else ("unresolved_events" if event_count else "not_observed"),
+                ),
+            )
+            connection.executemany(
+                """
+                INSERT INTO session_capabilities(
+                    source_session_id, capability, status, evidence_count,
+                    evidence_type, parser_version, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(source_session_id, capability) DO UPDATE SET
+                    status = excluded.status,
+                    evidence_count = excluded.evidence_count,
+                    evidence_type = excluded.evidence_type,
+                    parser_version = excluded.parser_version,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    (
+                        session_id,
+                        item.capability.value,
+                        item.status.value,
+                        item.evidence_count,
+                        item.evidence_type,
+                        parser_version,
+                        now,
+                    )
+                    for item in derived
+                ),
+            )
+
+
+def _is_coverage_regression(
+    previous: sqlite3.Row | None,
+    current_ratio: float | None,
+) -> bool:
+    if previous is None or current_ratio is None or previous["coverage_ratio"] is None:
+        return False
+    previous_total = int(previous["total_count"])
+    previous_ratio = float(previous["coverage_ratio"])
+    return bool(
+        previous_total >= MIN_COVERAGE_BASELINE_SESSIONS
+        and previous_ratio - current_ratio >= COVERAGE_REGRESSION_ABSOLUTE_DROP
+        and current_ratio <= previous_ratio * COVERAGE_REGRESSION_RELATIVE_RATIO
+    )
+
+
 def _ingestion_state(
     connection: sqlite3.Connection,
     candidate: SourceSessionCandidate,
@@ -1714,8 +2406,11 @@ def _source_unchanged(
         state is not None
         and state["size_bytes"] == candidate.size_bytes
         and state["mtime_ns"] == candidate.mtime_ns
+        and state["file_identity"] == candidate.file_identity
         and state["parser_version"] == parser_version
         and state["source_schema_version"] == candidate.source_schema_version
+        and state["source_schema_fingerprint"]
+        == (candidate.source_schema_fingerprint or None)
         and str(state["status"]).startswith("indexed")
     )
 
@@ -1731,8 +2426,11 @@ def _state_matches_status(
         state is not None
         and state["size_bytes"] == candidate.size_bytes
         and state["mtime_ns"] == candidate.mtime_ns
+        and state["file_identity"] == candidate.file_identity
         and state["parser_version"] == parser_version
         and state["source_schema_version"] == candidate.source_schema_version
+        and state["source_schema_fingerprint"]
+        == (candidate.source_schema_fingerprint or None)
         and state["status"] == status
         and state["error"] is None
     )
@@ -1746,14 +2444,20 @@ def _upsert_ingestion_state(
     status: str,
     error: str | None,
     parsed_byte_offset: int | None,
+    successful: bool,
+    stale: bool,
 ) -> None:
+    now = _utc_now()
     connection.execute(
         """
         INSERT INTO ingestion_state(
             source_home, source_path, source_session_id, source_kind, size_bytes, mtime_ns,
             last_parsed_byte_offset, parser_version, source_schema_version, status, error,
-            indexed_at
-        ) VALUES (?, ?, ?, 'rollout_jsonl', ?, ?, ?, ?, ?, ?, ?, ?)
+            indexed_at, file_identity, source_schema_fingerprint,
+            last_successful_parse_at, last_successful_size_bytes,
+            last_successful_mtime_ns, last_successful_file_identity,
+            last_successful_byte_offset, stale, error_at
+        ) VALUES (?, ?, ?, 'rollout_jsonl', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(source_home, source_path) DO UPDATE SET
             source_session_id = excluded.source_session_id,
             source_kind = excluded.source_kind,
@@ -1764,7 +2468,31 @@ def _upsert_ingestion_state(
             source_schema_version = excluded.source_schema_version,
             status = excluded.status,
             error = excluded.error,
-            indexed_at = excluded.indexed_at
+            indexed_at = excluded.indexed_at,
+            file_identity = excluded.file_identity,
+            source_schema_fingerprint = excluded.source_schema_fingerprint,
+            last_successful_parse_at = COALESCE(
+                excluded.last_successful_parse_at,
+                ingestion_state.last_successful_parse_at
+            ),
+            last_successful_size_bytes = COALESCE(
+                excluded.last_successful_size_bytes,
+                ingestion_state.last_successful_size_bytes
+            ),
+            last_successful_mtime_ns = COALESCE(
+                excluded.last_successful_mtime_ns,
+                ingestion_state.last_successful_mtime_ns
+            ),
+            last_successful_file_identity = COALESCE(
+                excluded.last_successful_file_identity,
+                ingestion_state.last_successful_file_identity
+            ),
+            last_successful_byte_offset = COALESCE(
+                excluded.last_successful_byte_offset,
+                ingestion_state.last_successful_byte_offset
+            ),
+            stale = excluded.stale,
+            error_at = excluded.error_at
         """,
         (
             str(candidate.session.source_home),
@@ -1777,7 +2505,16 @@ def _upsert_ingestion_state(
             candidate.source_schema_version,
             status,
             error,
-            _utc_now(),
+            now,
+            candidate.file_identity,
+            candidate.source_schema_fingerprint or None,
+            now if successful else None,
+            candidate.size_bytes if successful else None,
+            candidate.mtime_ns if successful else None,
+            candidate.file_identity if successful else None,
+            parsed_byte_offset if successful else None,
+            int(stale),
+            now if error else None,
         ),
     )
 
@@ -1790,12 +2527,25 @@ def _ingestion_source_path(candidate: SourceSessionCandidate) -> str:
 
 
 def _parse_warning(parsed: ParsedSourceSession) -> str | None:
-    if not parsed.malformed_line_count and not parsed.oversized_line_count:
+    if (
+        not parsed.malformed_line_count
+        and not parsed.oversized_line_count
+        and not parsed.partial_final_line
+        and not parsed.semantic_warnings
+    ):
         return None
-    return (
-        f"malformed_lines={parsed.malformed_line_count};"
-        f"oversized_lines={parsed.oversized_line_count}"
-    )
+    parts = [
+        f"malformed_lines={parsed.malformed_line_count}",
+        f"oversized_lines={parsed.oversized_line_count}",
+    ]
+    if parsed.partial_final_line:
+        parts.append("partial_final_line=1")
+    if parsed.semantic_warnings:
+        parts.append(
+            "semantic_warnings="
+            + ",".join(item.code for item in parsed.semantic_warnings)
+        )
+    return ";".join(parts)
 
 
 def _preserve_rollout_metadata(

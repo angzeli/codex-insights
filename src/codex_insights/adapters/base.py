@@ -9,6 +9,10 @@ from codex_insights.discovery import CodexEnvironmentReport
 from codex_insights.models import ParsedSourceSession, SourceSessionCandidate
 
 
+class SourceChangedDuringParseError(RuntimeError):
+    """A source adapter detected that a live input changed during parsing."""
+
+
 class SourceAdapter(Protocol):
     """Minimal source contract; ingestion can grow behind this boundary."""
 

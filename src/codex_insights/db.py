@@ -7,7 +7,7 @@ from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
 
-SCHEMA_VERSION = 12
+SCHEMA_VERSION = 13
 
 _MIGRATION_1 = """
 CREATE TABLE source_sessions (
@@ -596,6 +596,141 @@ CREATE INDEX prompt_features_validation_idx ON prompt_features(requests_validati
 CREATE INDEX prompt_features_commit_idx ON prompt_features(requests_commit);
 """
 
+_MIGRATION_13 = """
+ALTER TABLE ingestion_state ADD COLUMN file_identity TEXT;
+ALTER TABLE ingestion_state ADD COLUMN source_schema_fingerprint TEXT;
+ALTER TABLE ingestion_state ADD COLUMN last_successful_parse_at TEXT;
+ALTER TABLE ingestion_state ADD COLUMN last_successful_size_bytes INTEGER;
+ALTER TABLE ingestion_state ADD COLUMN last_successful_mtime_ns INTEGER;
+ALTER TABLE ingestion_state ADD COLUMN last_successful_file_identity TEXT;
+ALTER TABLE ingestion_state ADD COLUMN last_successful_byte_offset INTEGER;
+ALTER TABLE ingestion_state ADD COLUMN stale INTEGER NOT NULL DEFAULT 0
+    CHECK (stale IN (0, 1));
+ALTER TABLE ingestion_state ADD COLUMN error_at TEXT;
+
+UPDATE ingestion_state
+SET last_successful_parse_at = indexed_at,
+    last_successful_size_bytes = size_bytes,
+    last_successful_mtime_ns = mtime_ns,
+    last_successful_byte_offset = last_parsed_byte_offset
+WHERE status LIKE 'indexed%';
+
+CREATE TABLE source_compatibility (
+    source_type TEXT NOT NULL,
+    source_home TEXT NOT NULL,
+    parser_version TEXT NOT NULL,
+    selected_state_db_path TEXT,
+    selection_reason TEXT NOT NULL,
+    alternatives_json TEXT NOT NULL,
+    source_schema_fingerprint TEXT,
+    source_schema_hints_json TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (source_type, source_home)
+);
+
+CREATE TABLE session_compatibility (
+    source_session_id INTEGER PRIMARY KEY
+        REFERENCES source_sessions(id) ON DELETE CASCADE,
+    source_type TEXT NOT NULL,
+    source_db_path TEXT,
+    source_path TEXT,
+    parser_version TEXT NOT NULL,
+    source_schema_fingerprint TEXT,
+    source_schema_hints_json TEXT NOT NULL,
+    capability_set_json TEXT NOT NULL,
+    event_fingerprint_version TEXT NOT NULL,
+    token_lineage_algorithm_version TEXT NOT NULL,
+    provenance_algorithm_version TEXT NOT NULL,
+    outcome_classifier_version TEXT NOT NULL,
+    task_classifier_version TEXT NOT NULL,
+    indexed_at TEXT NOT NULL,
+    last_successful_parse_at TEXT,
+    parse_status TEXT NOT NULL,
+    stale INTEGER NOT NULL DEFAULT 0 CHECK (stale IN (0, 1))
+);
+CREATE INDEX session_compatibility_status_idx
+    ON session_compatibility(parse_status, stale);
+
+CREATE TABLE session_capabilities (
+    source_session_id INTEGER NOT NULL
+        REFERENCES source_sessions(id) ON DELETE CASCADE,
+    capability TEXT NOT NULL,
+    status TEXT NOT NULL CHECK (
+        status IN ('available', 'degraded', 'not_observed', 'unknown')
+    ),
+    evidence_count INTEGER NOT NULL DEFAULT 0 CHECK (evidence_count >= 0),
+    evidence_type TEXT NOT NULL,
+    parser_version TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (source_session_id, capability)
+);
+CREATE INDEX session_capabilities_coverage_idx
+    ON session_capabilities(capability, status);
+
+CREATE TABLE unknown_source_records (
+    source_session_id INTEGER NOT NULL
+        REFERENCES source_sessions(id) ON DELETE CASCADE,
+    unknown_kind TEXT NOT NULL,
+    unknown_name TEXT NOT NULL,
+    record_count INTEGER NOT NULL CHECK (record_count >= 0),
+    parser_version TEXT NOT NULL,
+    source_schema_fingerprint TEXT,
+    first_seen_at TEXT,
+    last_seen_at TEXT,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (source_session_id, unknown_kind, unknown_name, parser_version)
+);
+CREATE INDEX unknown_source_records_kind_idx
+    ON unknown_source_records(unknown_kind, unknown_name);
+
+CREATE TABLE compatibility_warnings (
+    id INTEGER PRIMARY KEY,
+    index_run_id INTEGER REFERENCES index_runs(id) ON DELETE CASCADE,
+    source_session_id INTEGER REFERENCES source_sessions(id) ON DELETE CASCADE,
+    warning_code TEXT NOT NULL,
+    severity TEXT NOT NULL CHECK (severity IN ('info', 'warning', 'error')),
+    warning_count INTEGER NOT NULL DEFAULT 1 CHECK (warning_count >= 1),
+    message TEXT NOT NULL,
+    parser_version TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX compatibility_warnings_run_idx
+    ON compatibility_warnings(index_run_id, warning_code);
+
+CREATE TABLE coverage_snapshots (
+    index_run_id INTEGER NOT NULL REFERENCES index_runs(id) ON DELETE CASCADE,
+    capability TEXT NOT NULL,
+    available_count INTEGER NOT NULL CHECK (available_count >= 0),
+    degraded_count INTEGER NOT NULL CHECK (degraded_count >= 0),
+    not_observed_count INTEGER NOT NULL CHECK (not_observed_count >= 0),
+    unknown_count INTEGER NOT NULL CHECK (unknown_count >= 0),
+    total_count INTEGER NOT NULL CHECK (total_count >= 0),
+    coverage_ratio REAL,
+    recorded_at TEXT NOT NULL,
+    PRIMARY KEY (index_run_id, capability)
+);
+
+INSERT INTO session_compatibility(
+    source_session_id, source_type, source_db_path, source_path, parser_version,
+    source_schema_fingerprint, source_schema_hints_json, capability_set_json,
+    event_fingerprint_version, token_lineage_algorithm_version,
+    provenance_algorithm_version, outcome_classifier_version,
+    task_classifier_version, indexed_at, last_successful_parse_at,
+    parse_status, stale
+)
+SELECT sessions.id, sessions.source_type, sessions.source_db_path, sessions.source_path,
+       COALESCE(state.parser_version, 'legacy-unknown'), NULL, '[]', '[]',
+       'event-fingerprint-v1', 'token-lineage-v1', 'event-provenance-v1',
+       'outcome-classifier-v1', 'task-taxonomy-v1', sessions.last_ingested_at,
+       CASE WHEN state.status LIKE 'indexed%' THEN state.indexed_at END,
+       COALESCE(state.status, 'legacy_migrated'),
+       CASE WHEN state.status IS NOT NULL AND state.status NOT LIKE 'indexed%' THEN 1 ELSE 0 END
+FROM source_sessions AS sessions
+LEFT JOIN ingestion_state AS state
+  ON state.source_home = sessions.source_home
+ AND state.source_session_id = sessions.source_session_id;
+"""
+
 _MIGRATIONS = {
     1: _MIGRATION_1,
     2: _MIGRATION_2,
@@ -609,6 +744,7 @@ _MIGRATIONS = {
     10: _MIGRATION_10,
     11: _MIGRATION_11,
     12: _MIGRATION_12,
+    13: _MIGRATION_13,
 }
 
 

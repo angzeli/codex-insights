@@ -1,0 +1,2 @@
+{"timestamp":"2026-01-03T00:00:00Z","type":"session_meta","payload":{"type":"session_meta"}}
+{"timestamp":"2026-01-03T00:01:00Z","type":"future_record_v2","future_field":true,"payload":{"type":"future_payload_v2","future_payload_field":1}}

@@ -149,6 +149,65 @@ class ToolResultStatus(StrEnum):
     UNKNOWN = "unknown"
 
 
+class SourceCapability(StrEnum):
+    """Source features detected without assuming that absence means zero activity."""
+
+    SESSION_CATALOGUE = "session_catalogue_metadata"
+    ROLLOUT_METADATA = "rollout_metadata"
+    TOKEN_USAGE = "token_usage"
+    TOKEN_LINEAGE = "token_lineage_evidence"
+    PROMPT_CONTENT = "prompt_content"
+    EVENT_PROVENANCE = "event_provenance"
+    TOOL_ACTIVITY = "tool_call_activity"
+    COMMAND_EXTRACTION = "command_extraction"
+    GIT_METADATA = "git_metadata"
+    REPOSITORY_ATTRIBUTION = "repository_attribution"
+    MODEL_ATTRIBUTION = "model_attribution"
+    PROVENANCE_MATCHING = "event_provenance_matching"
+    TASK_LIFECYCLE = "task_lifecycle"
+    ARCHIVE_METADATA = "archive_metadata"
+    DURATION_TIMESTAMPS = "duration_timestamps"
+
+
+class CapabilityStatus(StrEnum):
+    """Evidence state for one source capability in one session."""
+
+    AVAILABLE = "available"
+    DEGRADED = "degraded"
+    NOT_OBSERVED = "not_observed"
+    UNKNOWN = "unknown"
+
+
+@dataclass(frozen=True, slots=True)
+class CapabilityObservation:
+    """Bounded evidence that a source feature is or is not observable."""
+
+    capability: SourceCapability
+    status: CapabilityStatus
+    evidence_count: int = 0
+    evidence_type: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class UnknownSourceObservation:
+    """Counted source-format metadata that deliberately excludes raw payloads."""
+
+    kind: str
+    name: str
+    count: int
+    first_seen_at: datetime | None = None
+    last_seen_at: datetime | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class SourceSemanticWarning:
+    """A conservative warning that a recognized source shape changed behavior."""
+
+    code: str
+    count: int
+    detail: str
+
+
 @dataclass(frozen=True, slots=True)
 class ToolUsage:
     """Aggregate tool usage without captured stdout, stderr, or arguments."""
@@ -341,6 +400,10 @@ class SourceSessionCandidate:
     rollout_allowed: bool
     size_bytes: int | None = None
     mtime_ns: int | None = None
+    file_identity: str | None = None
+    source_schema_fingerprint: str = ""
+    source_schema_hints: tuple[str, ...] = field(default_factory=tuple)
+    capabilities: tuple[CapabilityObservation, ...] = field(default_factory=tuple)
 
 
 @dataclass(frozen=True, slots=True)
@@ -351,6 +414,16 @@ class ParsedSourceSession:
     malformed_line_count: int = 0
     oversized_line_count: int = 0
     parsed_byte_count: int = 0
+    valid_record_count: int = 0
+    partial_final_line: bool = False
+    source_file_identity: str | None = None
+    source_schema_fingerprint: str = ""
+    source_schema_hints: tuple[str, ...] = field(default_factory=tuple)
+    capabilities: tuple[CapabilityObservation, ...] = field(default_factory=tuple)
+    unknown_source_records: tuple[UnknownSourceObservation, ...] = field(
+        default_factory=tuple
+    )
+    semantic_warnings: tuple[SourceSemanticWarning, ...] = field(default_factory=tuple)
     token_snapshots: tuple[NormalizedTokenSnapshot, ...] = field(default_factory=tuple)
     event_observations: tuple[NormalizedEventObservation, ...] = field(default_factory=tuple)
     prompt_candidates: tuple[NormalizedPromptCandidate, ...] = field(default_factory=tuple)

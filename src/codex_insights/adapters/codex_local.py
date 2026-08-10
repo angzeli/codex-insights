@@ -8,9 +8,11 @@ from codex_insights.adapters.audit_models import SourceAuditResult
 from codex_insights.adapters.codex_audit import audit_codex_source
 from codex_insights.adapters.codex_index import (
     PARSER_VERSION,
+    StateDatabaseSelection,
     discover_session_candidates,
     discover_thread_relationships,
     parse_rollout,
+    select_state_database,
 )
 from codex_insights.config import CodexHomeResolution
 from codex_insights.discovery import CodexEnvironmentReport, inspect_codex_environment
@@ -67,3 +69,8 @@ class CodexLocalAdapter:
         """Return explicit source thread relationships without reading transcripts."""
 
         return discover_thread_relationships(self.resolution.path, source_type=self.name)
+
+    def state_database_selection(self) -> StateDatabaseSelection:
+        """Return bounded evidence for the selected source catalogue database."""
+
+        return select_state_database(self.resolution.path)

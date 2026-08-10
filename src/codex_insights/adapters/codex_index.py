@@ -2,19 +2,24 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
+import os
 import sqlite3
 from collections import Counter
 from collections.abc import Iterable, Mapping
 from contextlib import closing
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from codex_insights.adapters.base import SourceChangedDuringParseError
 from codex_insights.adapters.codex_events import extract_event
 from codex_insights.db import open_source_sqlite_readonly
 from codex_insights.models import (
+    CapabilityObservation,
+    CapabilityStatus,
     EventCategory,
     EventFamily,
     NormalizedEventCount,
@@ -27,13 +32,19 @@ from codex_insights.models import (
     NormalizedToolResultCandidate,
     NormalizedUsage,
     ParsedSourceSession,
+    SourceCapability,
+    SourceSemanticWarning,
     SourceSessionCandidate,
+    UnknownSourceObservation,
     UsageSemantics,
     UsageVector,
 )
 
-PARSER_VERSION = "codex-local-v6"
+PARSER_VERSION = "codex-source-parser-v7"
+SOURCE_SCHEMA_FINGERPRINT_VERSION = "codex-source-schema-v1"
 MAX_ROLLOUT_LINE_BYTES = 1024 * 1024
+MAX_STATE_REFERENCE_CHECKS = 1_000
+MAX_UNKNOWN_NAMES_PER_KIND = 128
 
 _COLUMN_ALIASES: dict[str, tuple[str, ...]] = {
     "id": ("id", "thread_id", "session_id", "conversation_id"),
@@ -75,6 +86,100 @@ _NON_CONTENT_PAYLOAD_TYPES = {
     "custom_tool_call_output",
 }
 
+_KNOWN_RECORD_TYPES = _STRUCTURAL_RECORD_TYPES | {
+    "event_msg",
+    "response_item",
+    "usage",
+    "user_message",
+    "tool_call",
+}
+_KNOWN_PAYLOAD_TYPES = _STRUCTURAL_RECORD_TYPES | _NON_CONTENT_PAYLOAD_TYPES | {
+    "agent_message",
+    "assistant_message",
+    "custom_tool_call",
+    "function_call",
+    "message",
+    "patch_apply_begin",
+    "patch_apply_end",
+    "token_count",
+    "tool_call",
+    "user_message",
+}
+_KNOWN_TOP_LEVEL_FIELDS = {
+    "event",
+    "id",
+    "kind",
+    "name",
+    "payload",
+    "timestamp",
+    "tool_name",
+    "type",
+    "usage",
+}
+_KNOWN_PAYLOAD_FIELDS = {
+    "arguments",
+    "call_id",
+    "cli_version",
+    "codex_version",
+    "content",
+    "cwd",
+    "duration_ms",
+    "exit_code",
+    "id",
+    "info",
+    "message",
+    "model",
+    "model_provider",
+    "name",
+    "output",
+    "provider",
+    "role",
+    "status",
+    "text",
+    "tool_name",
+    "type",
+    "usage",
+    "version",
+}
+
+
+@dataclass(frozen=True, slots=True)
+class StateDatabaseAssessment:
+    """Bounded evidence used to select one Codex state database."""
+
+    path: Path
+    readable: bool
+    catalogue_table: str | None
+    relationship_table: str | None
+    row_count: int | None
+    rollout_references_checked: int
+    valid_rollout_references: int
+    missing_rollout_references: int
+    schema_fingerprint: str
+    schema_hints: tuple[str, ...]
+    score: int
+    modified_ns: int
+    reasons: tuple[str, ...]
+    error_type: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class StateDatabaseSelection:
+    """Deterministic state database selection plus viable alternatives."""
+
+    selected: StateDatabaseAssessment | None
+    candidates: tuple[StateDatabaseAssessment, ...]
+
+    @property
+    def explanation(self) -> str:
+        if self.selected is None:
+            return "No compatible readable state database was found."
+        item = self.selected
+        return (
+            f"Selected {item.path.name} with score {item.score}: "
+            + "; ".join(item.reasons)
+        )
+
 
 def discover_session_candidates(
     codex_home: Path,
@@ -87,41 +192,41 @@ def discover_session_candidates(
     if not home.is_dir():
         return (), ("Codex home does not exist; no sessions were discovered.",)
 
-    warnings: list[str] = []
-    for database_path in _state_database_candidates(home):
-        try:
-            with closing(open_source_sqlite_readonly(database_path)) as connection:
-                connection.row_factory = sqlite3.Row
-                table = _recognize_catalogue_table(connection)
-                if table is None:
-                    warnings.append(
-                        f"{database_path.name} has no recognized session catalogue table."
-                    )
-                    continue
-                candidates: list[SourceSessionCandidate] = []
-                for columns, row in _catalogue_rows(connection, table):
-                    try:
-                        candidates.append(
-                            _candidate_from_row(
-                                row,
-                                columns,
-                                home=home,
-                                source_type=source_type,
-                                database_path=database_path,
-                                table=table,
-                            )
-                        )
-                    except (OSError, ValueError):
-                        warnings.append(f"One row in {database_path.name} could not be normalized.")
-                return tuple(candidates), tuple(warnings)
-        except (OSError, sqlite3.DatabaseError) as exc:
-            warnings.append(f"Could not read {database_path.name}: {type(exc).__name__}.")
+    selection = select_state_database(home)
+    warnings = _selection_warnings(selection)
+    selected = selection.selected
+    if selected is None or selected.catalogue_table is None:
+        if not selection.candidates:
+            warnings.append("No versioned Codex state database was found.")
+        else:
+            warnings.append("No recognized Codex session catalogue was found.")
+        return (), tuple(warnings)
 
-    if not _state_database_candidates(home):
-        warnings.append("No versioned Codex state database was found.")
-    elif not warnings:
-        warnings.append("No recognized Codex session catalogue was found.")
-    return (), tuple(warnings)
+    database_path = selected.path
+    try:
+        with closing(open_source_sqlite_readonly(database_path)) as connection:
+            connection.row_factory = sqlite3.Row
+            candidates: list[SourceSessionCandidate] = []
+            for columns, row in _catalogue_rows(connection, selected.catalogue_table):
+                try:
+                    candidates.append(
+                        _candidate_from_row(
+                            row,
+                            columns,
+                            home=home,
+                            source_type=source_type,
+                            database_path=database_path,
+                            table=selected.catalogue_table,
+                            schema_fingerprint=selected.schema_fingerprint,
+                            schema_hints=selected.schema_hints,
+                        )
+                    )
+                except (OSError, ValueError):
+                    warnings.append(f"One row in {database_path.name} could not be normalized.")
+            return tuple(candidates), tuple(warnings)
+    except (OSError, sqlite3.DatabaseError) as exc:
+        warnings.append(f"Could not read {database_path.name}: {type(exc).__name__}.")
+        return (), tuple(warnings)
 
 
 def discover_thread_relationships(
@@ -134,14 +239,18 @@ def discover_thread_relationships(
     home = codex_home.expanduser().resolve(strict=False)
     if not home.is_dir():
         return (), ()
-    warnings: list[str] = []
-    for database_path in _state_database_candidates(home):
-        try:
-            with closing(open_source_sqlite_readonly(database_path)) as connection:
+    selection = select_state_database(home)
+    warnings = _selection_warnings(selection)
+    selected_database = selection.selected
+    if selected_database is None:
+        return (), tuple(warnings)
+    database_path = selected_database.path
+    try:
+        with closing(open_source_sqlite_readonly(database_path)) as connection:
                 connection.row_factory = sqlite3.Row
                 table = _recognize_relationship_table(connection)
                 if table is None:
-                    continue
+                    return (), tuple(warnings)
                 declared = {
                     str(row[1]).lower(): str(row[1])
                     for row in connection.execute(f"PRAGMA table_info({_quote(table)})")
@@ -184,11 +293,11 @@ def discover_thread_relationships(
                     )
                 )
                 return tuple(relationships), tuple(warnings)
-        except (OSError, sqlite3.DatabaseError) as exc:
-            warnings.append(
-                f"Could not read thread relationships from {database_path.name}: "
-                f"{type(exc).__name__}."
-            )
+    except (OSError, sqlite3.DatabaseError) as exc:
+        warnings.append(
+            f"Could not read thread relationships from {database_path.name}: "
+            f"{type(exc).__name__}."
+        )
     return (), tuple(warnings)
 
 
@@ -198,6 +307,8 @@ def parse_rollout(candidate: SourceSessionCandidate) -> ParsedSourceSession:
     path = candidate.session.source_path
     if path is None or not candidate.rollout_allowed or not candidate.rollout_exists:
         raise FileNotFoundError(path)
+
+    before = path.stat()
 
     session = candidate.session
     event_counts: Counter[EventCategory] = Counter()
@@ -213,6 +324,15 @@ def parse_rollout(candidate: SourceSessionCandidate) -> ParsedSourceSession:
     malformed = 0
     oversized = 0
     parsed_bytes = 0
+    valid_records = 0
+    partial_final_line = False
+    record_types: Counter[str] = Counter()
+    payload_types: Counter[str] = Counter()
+    top_level_fields: set[str] = set()
+    payload_fields: set[str] = set()
+    unknown_counts: Counter[tuple[str, str]] = Counter()
+    unknown_first: dict[tuple[str, str], datetime] = {}
+    unknown_last: dict[tuple[str, str], datetime] = {}
     apparent_end = session.apparent_ended_at
     started_at = session.started_at
     source_offset = session.source_timezone_offset_minutes
@@ -222,6 +342,9 @@ def parse_rollout(candidate: SourceSessionCandidate) -> ParsedSourceSession:
     codex_version = session.codex_version
 
     with path.open("rb") as handle:
+        opened = os.fstat(handle.fileno())
+        if _stat_identity(opened) != _stat_identity(before):
+            raise SourceChangedDuringParseError("source_replaced_before_open")
         for source_ordinal, line in enumerate(handle):
             parsed_bytes += len(line)
             if len(line) > MAX_ROLLOUT_LINE_BYTES:
@@ -230,11 +353,15 @@ def parse_rollout(candidate: SourceSessionCandidate) -> ParsedSourceSession:
             try:
                 record = json.loads(line)
             except (json.JSONDecodeError, UnicodeDecodeError):
+                if not line.endswith(b"\n") and parsed_bytes == before.st_size:
+                    partial_final_line = True
+                    continue
                 malformed += 1
                 continue
             if not isinstance(record, dict):
                 malformed += 1
                 continue
+            valid_records += 1
 
             timestamp, offset = _parse_timestamp(record.get("timestamp"))
             if timestamp is not None:
@@ -246,7 +373,25 @@ def parse_rollout(candidate: SourceSessionCandidate) -> ParsedSourceSession:
 
             payload = record.get("payload")
             payload_map = payload if isinstance(payload, dict) else {}
-            if _record_type(record) == "session_meta":
+            record_type = _record_type(record)
+            payload_type = (_short_text(payload_map.get("type")) or "").lower()
+            if record_type:
+                record_types[record_type] += 1
+            if payload_type:
+                payload_types[payload_type] += 1
+            top_level_fields.update(_safe_schema_name(str(key)) for key in record)
+            payload_fields.update(_safe_schema_name(str(key)) for key in payload_map)
+            _observe_unknown_shapes(
+                record,
+                payload_map,
+                record_type=record_type,
+                payload_type=payload_type,
+                occurred_at=timestamp,
+                counts=unknown_counts,
+                first_seen=unknown_first,
+                last_seen=unknown_last,
+            )
+            if record_type == "session_meta":
                 cwd = cwd or _path_value(payload_map.get("cwd"))
                 model = model or _short_text(payload_map.get("model"))
                 model_provider = model_provider or _short_text(
@@ -302,6 +447,18 @@ def parse_rollout(candidate: SourceSessionCandidate) -> ParsedSourceSession:
                         summed_deltas[key] = value + (previous or 0)
                 token_update_count += 1
 
+        after_handle = os.fstat(handle.fileno())
+
+    try:
+        after_path = path.stat()
+    except OSError as exc:
+        raise SourceChangedDuringParseError("source_disappeared_during_parse") from exc
+    if (
+        _stat_signature(before) != _stat_signature(after_handle)
+        or _stat_signature(before) != _stat_signature(after_path)
+    ):
+        raise SourceChangedDuringParseError("source_changed_during_parse")
+
     usage_values = latest_cumulative if latest_cumulative is not None else summed_deltas
     if latest_cumulative is not None:
         semantics = UsageSemantics.CUMULATIVE_TOTAL
@@ -339,11 +496,43 @@ def parse_rollout(candidate: SourceSessionCandidate) -> ParsedSourceSession:
             if event_counts[category]
         ),
     )
+    schema_hints, schema_fingerprint = _rollout_schema_identity(
+        candidate,
+        record_types=record_types,
+        payload_types=payload_types,
+        top_level_fields=top_level_fields,
+        payload_fields=payload_fields,
+    )
+    capabilities = _parsed_capabilities(
+        candidate,
+        normalized,
+        valid_record_count=valid_records,
+        token_snapshot_count=len(token_snapshots),
+        event_observation_count=len(event_observations),
+        prompt_count=len(prompt_candidates),
+        tool_call_count=len(tool_call_candidates),
+        record_types=record_types,
+        payload_types=payload_types,
+        partial_final_line=partial_final_line,
+        unknown_tool_encoding=any(kind == "tool_encoding" for kind, _ in unknown_counts),
+    )
     return ParsedSourceSession(
         session=normalized,
         malformed_line_count=malformed,
         oversized_line_count=oversized,
         parsed_byte_count=parsed_bytes,
+        valid_record_count=valid_records,
+        partial_final_line=partial_final_line,
+        source_file_identity=_file_identity(after_path),
+        source_schema_fingerprint=schema_fingerprint,
+        source_schema_hints=schema_hints,
+        capabilities=capabilities,
+        unknown_source_records=_unknown_observations(
+            unknown_counts,
+            unknown_first,
+            unknown_last,
+        ),
+        semantic_warnings=_token_semantic_warnings(token_snapshots),
         token_snapshots=tuple(token_snapshots),
         event_observations=tuple(event_observations),
         prompt_candidates=tuple(prompt_candidates),
@@ -352,22 +541,452 @@ def parse_rollout(candidate: SourceSessionCandidate) -> ParsedSourceSession:
     )
 
 
+def _stat_identity(stat: os.stat_result) -> tuple[int, int]:
+    return int(stat.st_dev), int(stat.st_ino)
+
+
+def _stat_signature(stat: os.stat_result) -> tuple[int, int, int, int]:
+    return (*_stat_identity(stat), int(stat.st_size), int(stat.st_mtime_ns))
+
+
+def _safe_schema_name(value: str) -> str:
+    stripped = value.strip().lower()
+    if (
+        stripped
+        and len(stripped) <= 128
+        and all(
+            character.isascii() and (character.isalnum() or character in "_.-")
+            for character in stripped
+        )
+    ):
+        return stripped
+    return "<unrecognized-name>"
+
+
+def _observe_unknown_shapes(
+    record: Mapping[str, Any],
+    payload: Mapping[str, Any],
+    *,
+    record_type: str,
+    payload_type: str,
+    occurred_at: datetime | None,
+    counts: Counter[tuple[str, str]],
+    first_seen: dict[tuple[str, str], datetime],
+    last_seen: dict[tuple[str, str], datetime],
+) -> None:
+    observations: list[tuple[str, str]] = []
+    if record_type and record_type not in _KNOWN_RECORD_TYPES:
+        observations.append(("record_type", _safe_schema_name(record_type)))
+    if payload_type and payload_type not in _KNOWN_PAYLOAD_TYPES:
+        observations.append(("payload_type", _safe_schema_name(payload_type)))
+        if "tool" in payload_type or "function" in payload_type:
+            observations.append(("tool_encoding", _safe_schema_name(payload_type)))
+    observations.extend(
+        ("top_level_field", _safe_schema_name(str(field)))
+        for field in record
+        if _safe_schema_name(str(field)) not in _KNOWN_TOP_LEVEL_FIELDS
+    )
+    observations.extend(
+        ("payload_field", _safe_schema_name(str(field)))
+        for field in payload
+        if _safe_schema_name(str(field)) not in _KNOWN_PAYLOAD_FIELDS
+    )
+    for kind, raw_name in observations:
+        name = raw_name
+        known_names = {item_name for item_kind, item_name in counts if item_kind == kind}
+        if name not in known_names and len(known_names) >= MAX_UNKNOWN_NAMES_PER_KIND:
+            name = "<additional-unknown-names>"
+        key = kind, name
+        counts[key] += 1
+        if occurred_at is not None:
+            first_seen[key] = min(first_seen.get(key, occurred_at), occurred_at)
+            last_seen[key] = max(last_seen.get(key, occurred_at), occurred_at)
+
+
+def _unknown_observations(
+    counts: Counter[tuple[str, str]],
+    first_seen: Mapping[tuple[str, str], datetime],
+    last_seen: Mapping[tuple[str, str], datetime],
+) -> tuple[UnknownSourceObservation, ...]:
+    return tuple(
+        UnknownSourceObservation(
+            kind=kind,
+            name=name,
+            count=count,
+            first_seen_at=first_seen.get((kind, name)),
+            last_seen_at=last_seen.get((kind, name)),
+        )
+        for (kind, name), count in sorted(counts.items())
+    )
+
+
+def _rollout_schema_identity(
+    candidate: SourceSessionCandidate,
+    *,
+    record_types: Counter[str],
+    payload_types: Counter[str],
+    top_level_fields: set[str],
+    payload_fields: set[str],
+) -> tuple[tuple[str, ...], str]:
+    rollout_shape = {
+        "record_types": sorted(record_types),
+        "payload_types": sorted(payload_types),
+        "top_level_fields": sorted(top_level_fields),
+        "payload_fields": sorted(payload_fields),
+    }
+    encoded = json.dumps(
+        {
+            "version": SOURCE_SCHEMA_FINGERPRINT_VERSION,
+            "state_schema": candidate.source_schema_fingerprint,
+            "rollout": rollout_shape,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode()
+    hints = (
+        *candidate.source_schema_hints,
+        f"rollout-record-types:{','.join(rollout_shape['record_types'])}",
+        f"rollout-payload-types:{','.join(rollout_shape['payload_types'])}",
+        f"rollout-top-fields:{','.join(rollout_shape['top_level_fields'])}",
+        f"rollout-payload-fields:{','.join(rollout_shape['payload_fields'])}",
+    )
+    return hints, hashlib.sha256(encoded).hexdigest()
+
+
+def _parsed_capabilities(
+    candidate: SourceSessionCandidate,
+    session: NormalizedSourceSession,
+    *,
+    valid_record_count: int,
+    token_snapshot_count: int,
+    event_observation_count: int,
+    prompt_count: int,
+    tool_call_count: int,
+    record_types: Counter[str],
+    payload_types: Counter[str],
+    partial_final_line: bool,
+    unknown_tool_encoding: bool,
+) -> tuple[CapabilityObservation, ...]:
+    observed_task_lifecycle = sum(
+        count
+        for name, count in (*record_types.items(), *payload_types.items())
+        if name in {"task_started", "task_complete", "task_failed", "task_aborted"}
+    )
+    command_count = sum(
+        item.count
+        for item in session.event_counts
+        if item.category in {EventCategory.SHELL_COMMAND, EventCategory.PATCH_EDIT}
+    )
+    values = {
+        capability: CapabilityObservation(
+            capability,
+            CapabilityStatus.UNKNOWN,
+            evidence_type="derived_after_indexing"
+            if capability
+            in {
+                SourceCapability.REPOSITORY_ATTRIBUTION,
+                SourceCapability.MODEL_ATTRIBUTION,
+                SourceCapability.PROVENANCE_MATCHING,
+            }
+            else "not_evaluated",
+        )
+        for capability in SourceCapability
+    }
+    values.update({item.capability: item for item in candidate.capabilities})
+
+    def observed(
+        capability: SourceCapability,
+        count: int,
+        evidence: str,
+        *,
+        degraded: bool = False,
+    ) -> None:
+        values[capability] = CapabilityObservation(
+            capability,
+            CapabilityStatus.DEGRADED
+            if degraded
+            else (CapabilityStatus.AVAILABLE if count else CapabilityStatus.NOT_OBSERVED),
+            evidence_count=count,
+            evidence_type=(
+                "unrecognized_source_encoding"
+                if degraded and not count
+                else (evidence if count else "not_observed")
+            ),
+        )
+
+    observed(
+        SourceCapability.ROLLOUT_METADATA,
+        valid_record_count,
+        "valid_jsonl_records",
+        degraded=partial_final_line,
+    )
+    observed(SourceCapability.TOKEN_USAGE, token_snapshot_count, "recognized_token_snapshots")
+    observed(SourceCapability.TOKEN_LINEAGE, token_snapshot_count, "cumulative_token_vectors")
+    observed(SourceCapability.PROMPT_CONTENT, prompt_count, "recognized_user_messages")
+    observed(
+        SourceCapability.EVENT_PROVENANCE,
+        event_observation_count,
+        "fingerprintable_semantic_events",
+    )
+    observed(
+        SourceCapability.TOOL_ACTIVITY,
+        tool_call_count,
+        "recognized_tool_calls",
+        degraded=unknown_tool_encoding and not tool_call_count,
+    )
+    observed(
+        SourceCapability.COMMAND_EXTRACTION,
+        command_count,
+        "normalized_commands",
+        degraded=unknown_tool_encoding and not command_count,
+    )
+    observed(
+        SourceCapability.TASK_LIFECYCLE,
+        observed_task_lifecycle,
+        "recognized_task_lifecycle_records",
+    )
+    values[SourceCapability.GIT_METADATA] = CapabilityObservation(
+        SourceCapability.GIT_METADATA,
+        CapabilityStatus.AVAILABLE
+        if session.git_sha or session.git_origin_url or session.repository_root
+        else CapabilityStatus.NOT_OBSERVED,
+        evidence_count=int(
+            bool(session.git_sha or session.git_origin_url or session.repository_root)
+        ),
+        evidence_type="normalized_git_or_repository_metadata"
+        if session.git_sha or session.git_origin_url or session.repository_root
+        else "not_observed",
+    )
+    values[SourceCapability.DURATION_TIMESTAMPS] = CapabilityObservation(
+        SourceCapability.DURATION_TIMESTAMPS,
+        CapabilityStatus.AVAILABLE
+        if session.started_at and session.apparent_ended_at
+        else CapabilityStatus.NOT_OBSERVED,
+        evidence_count=int(bool(session.started_at and session.apparent_ended_at)),
+        evidence_type="normalized_start_and_end"
+        if session.started_at and session.apparent_ended_at
+        else "incomplete_range",
+    )
+    return tuple(values[key] for key in SourceCapability)
+
+
+def _token_semantic_warnings(
+    snapshots: list[NormalizedTokenSnapshot],
+) -> tuple[SourceSemanticWarning, ...]:
+    fields = (
+        "input_tokens",
+        "cached_input_tokens",
+        "cache_write_input_tokens",
+        "output_tokens",
+        "reasoning_output_tokens",
+        "total_tokens",
+    )
+    decreases = 0
+    inconsistent_vectors = 0
+    for previous, current in zip(snapshots, snapshots[1:], strict=False):
+        for field in fields:
+            left = getattr(previous.cumulative, field)
+            right = getattr(current.cumulative, field)
+            if left is not None and right is not None and right < left:
+                decreases += 1
+    for snapshot in snapshots:
+        total = snapshot.cumulative.total_tokens
+        components = (
+            snapshot.cumulative.input_tokens,
+            snapshot.cumulative.output_tokens,
+        )
+        if total is not None and any(value is not None and value > total for value in components):
+            inconsistent_vectors += 1
+    warnings: list[SourceSemanticWarning] = []
+    if decreases:
+        warnings.append(
+            SourceSemanticWarning(
+                code="cumulative_token_decrease",
+                count=decreases,
+                detail="Recognized cumulative token fields decreased between snapshots.",
+            )
+        )
+    if inconsistent_vectors:
+        warnings.append(
+            SourceSemanticWarning(
+                code="token_vector_relationship_changed",
+                count=inconsistent_vectors,
+                detail="A reported token component exceeded the reported total.",
+            )
+        )
+    return tuple(warnings)
+
+
+def select_state_database(codex_home: Path) -> StateDatabaseSelection:
+    """Score compatible state databases by structure and live rollout consistency."""
+
+    home = codex_home.expanduser().resolve(strict=False)
+    assessments = tuple(
+        _assess_state_database(path, home) for path in _state_database_candidates(home)
+    )
+    viable = [item for item in assessments if item.readable and item.catalogue_table]
+    selected = max(
+        viable,
+        key=lambda item: (
+            item.score,
+            item.valid_rollout_references,
+            item.row_count or -1,
+            item.modified_ns,
+            item.path.name,
+        ),
+        default=None,
+    )
+    return StateDatabaseSelection(selected=selected, candidates=assessments)
+
+
+def _assess_state_database(path: Path, home: Path) -> StateDatabaseAssessment:
+    try:
+        modified_ns = path.stat().st_mtime_ns
+    except OSError:
+        modified_ns = -1
+    try:
+        with closing(open_source_sqlite_readonly(path)) as connection:
+            connection.row_factory = sqlite3.Row
+            table = _recognize_catalogue_table(connection)
+            relationship_table = _recognize_relationship_table(connection)
+            schema_hints, fingerprint = _source_database_schema(connection)
+            if table is None:
+                return StateDatabaseAssessment(
+                    path=path,
+                    readable=True,
+                    catalogue_table=None,
+                    relationship_table=relationship_table,
+                    row_count=None,
+                    rollout_references_checked=0,
+                    valid_rollout_references=0,
+                    missing_rollout_references=0,
+                    schema_fingerprint=fingerprint,
+                    schema_hints=schema_hints,
+                    score=10,
+                    modified_ns=modified_ns,
+                    reasons=("readable SQLite", "no compatible catalogue"),
+                )
+            row_count = int(
+                connection.execute(f"SELECT COUNT(*) FROM {_quote(table)}").fetchone()[0]
+            )
+            checked = valid = missing = 0
+            timestamp_capable = False
+            for columns, row in _catalogue_rows(connection, table):
+                if checked >= MAX_STATE_REFERENCE_CHECKS:
+                    break
+                if columns.get("created_at") or columns.get("updated_at"):
+                    timestamp_capable = True
+                raw_path = _short_text(_row_value(row, columns, "rollout_path"))
+                resolved, allowed = _resolve_rollout_path(home, raw_path)
+                if resolved is None or not allowed:
+                    continue
+                checked += 1
+                if resolved.is_file():
+                    valid += 1
+                else:
+                    missing += 1
+            score = 50
+            reasons = ["readable SQLite", f"compatible catalogue {table}"]
+            if relationship_table:
+                score += 5
+                reasons.append(f"relationship table {relationship_table}")
+            if timestamp_capable:
+                score += 5
+                reasons.append("catalogue timestamps")
+            if checked:
+                consistency = valid / checked
+                score += round(consistency * 30)
+                reasons.append(f"{valid}/{checked} valid rollout references")
+            if row_count:
+                score += min(10, row_count.bit_length())
+                reasons.append(f"{row_count} catalogue rows")
+            return StateDatabaseAssessment(
+                path=path,
+                readable=True,
+                catalogue_table=table,
+                relationship_table=relationship_table,
+                row_count=row_count,
+                rollout_references_checked=checked,
+                valid_rollout_references=valid,
+                missing_rollout_references=missing,
+                schema_fingerprint=fingerprint,
+                schema_hints=schema_hints,
+                score=score,
+                modified_ns=modified_ns,
+                reasons=tuple(reasons),
+            )
+    except (OSError, sqlite3.DatabaseError) as exc:
+        return StateDatabaseAssessment(
+            path=path,
+            readable=False,
+            catalogue_table=None,
+            relationship_table=None,
+            row_count=None,
+            rollout_references_checked=0,
+            valid_rollout_references=0,
+            missing_rollout_references=0,
+            schema_fingerprint="",
+            schema_hints=(),
+            score=0,
+            modified_ns=modified_ns,
+            reasons=("unreadable SQLite",),
+            error_type=type(exc).__name__,
+        )
+
+
+def _source_database_schema(connection: sqlite3.Connection) -> tuple[tuple[str, ...], str]:
+    structures: list[dict[str, object]] = []
+    hints: list[str] = []
+    for row in connection.execute(
+        "SELECT name FROM sqlite_schema WHERE type = 'table' "
+        "AND name NOT LIKE 'sqlite_%' ORDER BY name"
+    ):
+        table = str(row[0])
+        columns = [
+            {
+                "name": str(item[1]).lower(),
+                "type": str(item[2]).upper(),
+                "pk": int(item[5]),
+            }
+            for item in connection.execute(f"PRAGMA table_info({_quote(table)})")
+        ]
+        structures.append({"table": table.lower(), "columns": columns})
+        hints.append(f"{table.lower()}({','.join(str(item['name']) for item in columns)})")
+    encoded = json.dumps(
+        {"version": SOURCE_SCHEMA_FINGERPRINT_VERSION, "structures": structures},
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode()
+    return tuple(hints), hashlib.sha256(encoded).hexdigest()
+
+
+def _selection_warnings(selection: StateDatabaseSelection) -> list[str]:
+    warnings = [
+        f"Could not read {item.path.name}: {item.error_type}."
+        for item in selection.candidates
+        if not item.readable
+    ]
+    selected = selection.selected
+    if selected is not None:
+        alternatives = [
+            item
+            for item in selection.candidates
+            if item.path != selected.path and item.readable and item.catalogue_table
+        ]
+        if alternatives:
+            warnings.append(
+                f"Selected {selected.path.name} by compatibility score {selected.score}; "
+                f"{len(alternatives)} other compatible state database(s) were not combined."
+            )
+    return warnings
+
+
 def _state_database_candidates(home: Path) -> tuple[Path, ...]:
     paths = {path for path in home.glob("state_*.sqlite") if path.is_file()}
     legacy = home / "state.sqlite"
     if legacy.is_file():
         paths.add(legacy)
-    return tuple(sorted(paths, key=_database_sort_key, reverse=True))
-
-
-def _database_sort_key(path: Path) -> tuple[int, int, str]:
-    suffix = path.stem.removeprefix("state_")
-    version = int(suffix) if suffix.isdigit() else -1
-    try:
-        modified = path.stat().st_mtime_ns
-    except OSError:
-        modified = -1
-    return version, modified, path.name
+    return tuple(sorted(paths, key=lambda path: path.name))
 
 
 def _recognize_catalogue_table(connection: sqlite3.Connection) -> str | None:
@@ -436,6 +1055,8 @@ def _candidate_from_row(
     source_type: str,
     database_path: Path,
     table: str,
+    schema_fingerprint: str,
+    schema_hints: tuple[str, ...],
 ) -> SourceSessionCandidate:
     source_session_id = _short_text(_row_value(row, columns, "id"))
     if not source_session_id:
@@ -484,7 +1105,54 @@ def _candidate_from_row(
         rollout_allowed=allowed,
         size_bytes=int(stat.st_size) if stat else None,
         mtime_ns=int(stat.st_mtime_ns) if stat else None,
+        file_identity=_file_identity(stat),
+        source_schema_fingerprint=schema_fingerprint,
+        source_schema_hints=schema_hints,
+        capabilities=_catalogue_capabilities(columns, session),
     )
+
+
+def _catalogue_capabilities(
+    columns: Mapping[str, str],
+    session: NormalizedSourceSession,
+) -> tuple[CapabilityObservation, ...]:
+    archive_available = bool(columns.get("archived") or columns.get("archived_at"))
+    git_available = bool(
+        session.git_sha or session.git_origin_url or session.repository_root
+    )
+    duration_available = bool(session.started_at and session.apparent_ended_at)
+    return (
+        CapabilityObservation(
+            SourceCapability.SESSION_CATALOGUE,
+            CapabilityStatus.AVAILABLE,
+            evidence_count=1,
+            evidence_type="recognized_catalogue_row",
+        ),
+        CapabilityObservation(
+            SourceCapability.ARCHIVE_METADATA,
+            CapabilityStatus.AVAILABLE if archive_available else CapabilityStatus.UNKNOWN,
+            evidence_count=int(archive_available),
+            evidence_type="catalogue_archive_column" if archive_available else "column_absent",
+        ),
+        CapabilityObservation(
+            SourceCapability.GIT_METADATA,
+            CapabilityStatus.AVAILABLE if git_available else CapabilityStatus.NOT_OBSERVED,
+            evidence_count=int(git_available),
+            evidence_type="catalogue_git_metadata" if git_available else "not_observed",
+        ),
+        CapabilityObservation(
+            SourceCapability.DURATION_TIMESTAMPS,
+            CapabilityStatus.AVAILABLE if duration_available else CapabilityStatus.NOT_OBSERVED,
+            evidence_count=int(duration_available),
+            evidence_type="start_and_end_timestamps" if duration_available else "incomplete_range",
+        ),
+    )
+
+
+def _file_identity(stat: os.stat_result | None) -> str | None:
+    if stat is None:
+        return None
+    return f"{stat.st_dev}:{stat.st_ino}"
 
 
 def _row_value(row: sqlite3.Row, columns: Mapping[str, str], concept: str) -> Any:
