@@ -168,8 +168,10 @@ itself does not create that index and does not copy raw records.
 ## Indexer v1 recognition and limits
 
 The first `CodexLocalAdapter` index mapping is based on the observations above. It discovers
-top-level `state_*.sqlite` or legacy `state.sqlite` files and considers newer numeric versions
-first. Within a read-only database it recognizes a catalogue table by structural column roles—an
+top-level `state_*.sqlite` or legacy `state.sqlite` files and scores them by readable compatible
+schema, timestamps, catalogue size, and bounded valid/missing rollout references. It does not pick
+solely by numeric suffix or combine multiple catalogues. Within the selected read-only database it
+recognizes a catalogue table by structural column roles—an
 ID plus a rollout path, strengthened by timestamp, working-directory, model, archive, and Git
 metadata—rather than depending on the literal name `threads` or the version `state_5.sqlite`.
 
@@ -205,10 +207,15 @@ and is not subtracted. `last_token_usage` is supporting evidence; a mismatch doe
 exact cumulative prefix because local delta telemetry can be incomplete or reset.
 
 The first parse streams the entire referenced rollout because complete per-session totals require
-the final cumulative token record. Subsequent runs skip a rollout when file size, nanosecond mtime,
-parser version, and recognized source-schema version are unchanged. A changed file is conservatively
-reparsed from byte zero; the recorded byte offset is provenance for a future append-only strategy,
-not yet a resume point. No content fingerprint is calculated.
+the final cumulative token record. Subsequent runs skip a rollout when file identity, size,
+nanosecond mtime, parser version, and recognized source-schema fingerprint are unchanged. A changed
+file is conservatively reparsed from byte zero; the recorded byte offset is provenance for a future
+append-only strategy, not yet a resume point. No raw-content fingerprint is calculated.
+
+The parser counts bounded unknown record/payload/field/tool shapes without storing their payloads.
+It verifies file identity/size/mtime across a parse, defers repeated live mutations, and treats an
+incomplete final line as a partial append. Previous-good normalized rows are retained on failure.
+See `docs/schema-compatibility.md` for capability and recovery semantics.
 
 This version indexes sessions represented in a recognized catalogue. A missing, deleted, or
 out-of-home rollout is retained as metadata-only session provenance and reported as skipped; it is

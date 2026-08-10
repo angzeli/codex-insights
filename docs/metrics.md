@@ -57,6 +57,13 @@ these distinct evidence clocks rather than treating missing timestamps as zero a
 
 ## Coverage and ratios
 
+Source capability coverage is separate from metric value coverage. Each session records
+`available`, `degraded`, `not_observed`, or `unknown` for parser capabilities such as tokens,
+prompts, tools, provenance, repository/model attribution, lifecycle, archive state, and duration.
+`not_observed` and `unknown` never mean a zero event count. `doctor --deep` compares the latest
+successful snapshot with the preceding successful run and labels material regressions explicitly.
+These warnings do not alter token, provenance, outcome, or taxonomy algorithms.
+
 Tokens per confirmed commit is a descriptive ratio of reconciled contributions for sessions with
 HIGH-confidence commit associations. It is not a productivity score. Failed-command rates use only
 tool results with known success/failure status. UNKNOWN outcomes and tasks remain in denominators and

@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from typer.testing import CliRunner
 
 from codex_insights import __version__
+from codex_insights.adapters import CodexLocalAdapter
 from codex_insights.cli import app
+from codex_insights.config import resolve_codex_home
+from codex_insights.indexer import index_source
 
 runner = CliRunner()
 
@@ -48,3 +52,70 @@ def test_doctor_handles_missing_home(tmp_path: Path) -> None:
 
     assert result.exit_code == 0
     assert "Codex home was not found" in result.stdout
+
+
+def test_doctor_deep_reports_bounded_compatibility_diagnostics(
+    synthetic_audit_home: Path,
+    tmp_path: Path,
+) -> None:
+    database = tmp_path / "index.sqlite3"
+    source_database = synthetic_audit_home / "state_7.sqlite"
+    source_before = source_database.read_bytes()
+    index_source(
+        CodexLocalAdapter(resolve_codex_home(synthetic_audit_home)),
+        database,
+        codex_home=synthetic_audit_home,
+    )
+    database_before = database.read_bytes()
+
+    result = runner.invoke(
+        app,
+        [
+            "doctor",
+            "--deep",
+            "--json",
+            "--codex-home",
+            str(synthetic_audit_home),
+            "--db",
+            str(database),
+        ],
+        env={"HOME": str(tmp_path / "unused-home")},
+    )
+
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)
+    assert payload["schema_version"] == 13
+    assert payload["database_integrity"] == "ok"
+    assert payload["selected_state_database"] == "state_7.sqlite"
+    assert payload["source_session_count"] == 4
+    assert payload["indexed_session_count"] == 4
+    assert payload["capability_coverage"]
+    assert payload["parser_versions"]["source_parser"].startswith(
+        "codex-source-parser-"
+    )
+    assert source_database.read_bytes() == source_before
+    assert database.read_bytes() == database_before
+
+
+def test_doctor_deep_rejects_derived_database_inside_codex_home(
+    synthetic_audit_home: Path,
+) -> None:
+    unsafe_database = synthetic_audit_home / "derived.sqlite3"
+
+    result = runner.invoke(
+        app,
+        [
+            "doctor",
+            "--deep",
+            "--json",
+            "--codex-home",
+            str(synthetic_audit_home),
+            "--db",
+            str(unsafe_database),
+        ],
+    )
+
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)
+    assert payload["database_path_safe"] is False
+    assert not unsafe_database.exists()

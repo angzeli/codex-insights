@@ -47,6 +47,7 @@ replace `CodexLocalAdapter` without changing analytics or presentation code.
 
 - `config.py`: path precedence and analyzer defaults.
 - `discovery.py`: bounded metadata-only environment checks.
+- `diagnostics.py`: read-only source/index compatibility, coverage, and recovery diagnostics.
 - `models.py`: normalized, source-independent records.
 - `lineage.py`: exact-vector thread topology and token-lineage evidence rules.
 - `provenance.py`: ordered, fingerprint-based observed-versus-originated event evidence.
@@ -75,10 +76,15 @@ rebuild. Schema migrations apply only to this separate index. They must never ta
 databases. Provenance should eventually record adapter version and source identity without copying
 sensitive raw content.
 
-The initial indexer asks an adapter for normalized catalogue candidates and parses only candidates
+The indexer asks an adapter for normalized catalogue candidates and parses only candidates
 whose rollout size, nanosecond mtime, parser version, or recognized source-schema version changed.
 Each session is committed independently, so one failed rollout does not roll back successful
 sessions. The run log records discovered, new, updated, unchanged, skipped, and failed counts.
+Before and after each parse, the adapter compares file identity, size, and mtime. A live mutation is
+retried once; a repeated mutation or incomplete append preserves the previous-good normalized
+session and is exposed as stale. Capability and coverage metadata makes partial format support
+explicit rather than converting unsupported observations to zero. See
+`docs/schema-compatibility.md`.
 
 History exploration starts at the separate index. `analytics/queries.py` owns filtering, prefix
 resolution, deterministic ordering, aggregation, time-boundary semantics, and missing-data

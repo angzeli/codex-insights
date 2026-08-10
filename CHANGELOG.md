@@ -25,6 +25,12 @@ All notable changes to Codex Insights are documented here.
   features without an opaque quality score;
 - weekly and monthly Markdown, versioned JSON, and self-contained offline HTML reports built from
   shared analytics functions.
+- schema-13 compatibility provenance, per-session capability states, bounded unknown-record
+  metadata, and coverage-regression snapshots;
+- `doctor --deep` human/JSON diagnostics for state-database selection, parser versions, stale
+  sessions, recovery failures, source/index reconciliation, and lineage/provenance health;
+- safe live-rollout mutation detection, conservative retry/defer behavior, and previous-good
+  transactional recovery for partial or failed reparses.
 
 ### Changed
 
@@ -34,6 +40,8 @@ All notable changes to Codex Insights are documented here.
 - aggregate tool/command metrics exclude exact inherited or replayed observations while preserving
   per-session observations and explicit ambiguity;
 - periodic comparisons suppress percentages when token coverage changes materially.
+- state databases are selected by compatible structure and rollout-reference consistency rather
+  than numeric filename order; alternative candidates are reported and never silently combined.
 
 ### Safety
 

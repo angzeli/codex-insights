@@ -16,6 +16,7 @@ correlate Git commits, classify outcomes/tasks, and generate offline weekly or m
 codex-insights --help
 codex-insights version
 codex-insights doctor
+codex-insights doctor --deep
 codex-insights doctor --codex-home /path/to/codex-home
 codex-insights audit-source --codex-home /path/to/codex-home
 codex-insights index --codex-home /path/to/codex-home --db /path/to/index.sqlite3
@@ -117,12 +118,25 @@ codex-insights audit-source --json --sample-size 5
 codex-insights audit-source --verbose
 ```
 
+`doctor --deep` adds bounded compatibility and recovery diagnostics without re-indexing. It shows
+the selected and alternative state databases, source/parser versions, derived DB integrity,
+capability coverage, unknown-record totals, stale sessions, parse failures, and coverage warnings.
+
+```bash
+codex-insights doctor --deep
+codex-insights doctor --deep --json --db /path/to/index.sqlite3
+```
+
 `index` loads structural catalogue metadata from a discovered state database, then streams only
 the referenced rollout files that are new or changed. It stores normalized session metadata,
 cumulative token totals (or explicitly labelled summed deltas), aggregate event counts, compact
 provenance fingerprints, redacted user-authored prompt text for local search, and bounded,
 privacy-filtered command metadata. It does not retain assistant/hidden reasoning, raw command
 results, patches, tool output, stdout/stderr, environment dumps, or raw JSONL records.
+If a live rollout changes during parsing or ends in a partial line, indexing preserves the previous
+good normalized session and reports it as stale until a stable retry succeeds. Unknown source
+shapes are counted as bounded metadata, and missing capabilities remain explicit rather than zero.
+See [docs/schema-compatibility.md](docs/schema-compatibility.md).
 
 ```bash
 # Uses the platform-aware database default documented below.

@@ -17,6 +17,7 @@ from codex_insights.adapters import CodexLocalAdapter, SourceAuditResult
 from codex_insights.adapters.audit_models import FieldObservation
 from codex_insights.config import resolve_codex_home, resolve_index_path
 from codex_insights.db import UnsafeDatabasePathError, inspect_index
+from codex_insights.diagnostics import DeepDoctorReport, run_deep_diagnostics
 from codex_insights.git_cli import register_git_commands
 from codex_insights.history_cli import register_history_commands
 from codex_insights.indexer import index_source
@@ -63,10 +64,56 @@ def doctor(
             dir_okay=True,
         ),
     ] = None,
+    database: Annotated[
+        Path | None,
+        typer.Option(
+            "--db",
+            help="Codex Insights database to inspect without modifying it.",
+            dir_okay=False,
+        ),
+    ] = None,
+    deep: Annotated[
+        bool,
+        typer.Option(
+            "--deep",
+            help="Run bounded source/schema/capability and recovery diagnostics.",
+        ),
+    ] = False,
+    json_output: Annotated[
+        bool,
+        typer.Option("--json", help="Emit structured JSON diagnostics."),
+    ] = False,
 ) -> None:
     """Report safe runtime and Codex path metadata without reading histories."""
 
-    report = CodexLocalAdapter(resolve_codex_home(codex_home)).probe()
+    resolution = resolve_codex_home(codex_home)
+    report = CodexLocalAdapter(resolution).probe()
+    if deep:
+        diagnostic = run_deep_diagnostics(resolution.path, resolve_index_path(database))
+        if json_output:
+            console.print_json(data=diagnostic.to_dict())
+        else:
+            _render_deep_doctor(diagnostic)
+        return
+    if json_output:
+        console.print_json(
+            data={
+                "python_version": report.python_version,
+                "platform": report.platform,
+                "codex_home": str(report.codex_home.path),
+                "codex_home_source": report.codex_home.source,
+                "codex_home_exists": report.codex_home_exists,
+                "locations": [
+                    {
+                        "label": item.label,
+                        "path": str(item.path),
+                        "exists": item.exists,
+                    }
+                    for item in report.locations
+                ],
+            }
+        )
+        return
 
     summary = Table(title="Codex Insights doctor", show_header=False)
     summary.add_column("Item", style="bold cyan")
@@ -90,6 +137,86 @@ def doctor(
 
     if not report.codex_home_exists:
         console.print("[yellow]Codex home was not found; no session data was inspected.[/yellow]")
+
+
+def _render_deep_doctor(report: DeepDoctorReport) -> None:
+    summary = Table(title="Codex Insights doctor --deep", show_header=False)
+    summary.add_column("Item", style="bold cyan")
+    summary.add_column("Value", overflow="fold")
+    summary.add_row("Codex home", report.codex_home)
+    summary.add_row("Codex home exists", "yes" if report.codex_home_exists else "no")
+    summary.add_row("Insights DB", report.database_path)
+    summary.add_row("DB path safe", "yes" if report.database_path_safe else "no")
+    summary.add_row("DB integrity", report.database_integrity)
+    summary.add_row(
+        "Schema",
+        f"{report.schema_version or 'unavailable'} / supported {report.supported_schema_version}",
+    )
+    summary.add_row("Selected source DB", report.selected_state_database or "none")
+    summary.add_row("Selection evidence", report.state_database_selection_reason)
+    summary.add_row("Source sessions", str(report.source_session_count))
+    summary.add_row("Indexed sessions", str(report.indexed_session_count))
+    summary.add_row("Stale sessions", str(report.stale_session_count))
+    summary.add_row("Parse failures", str(report.parse_failure_count))
+    summary.add_row("Unknown source records", str(report.unknown_record_count))
+    summary.add_row(
+        "Unknown normalized-event rate",
+        f"{report.unknown_event_rate:.1%}"
+        if report.unknown_event_rate is not None
+        else "unavailable",
+    )
+    console.print(summary)
+
+    versions = Table(title="Compatibility algorithms")
+    versions.add_column("Component")
+    versions.add_column("Version")
+    for component, version_name in sorted(report.parser_versions.items()):
+        versions.add_row(component, version_name)
+    console.print(versions)
+
+    databases = Table(title="State database candidates")
+    databases.add_column("Candidate")
+    databases.add_column("Selected", justify="center")
+    databases.add_column("Score", justify="right")
+    databases.add_column("Catalogue")
+    databases.add_column("Valid/missing rollouts", justify="right")
+    if report.state_databases:
+        for database_item in report.state_databases:
+            databases.add_row(
+                database_item.name,
+                "yes" if database_item.selected else "no",
+                str(database_item.score),
+                database_item.catalogue_table or "none",
+                f"{database_item.valid_rollout_references}/"
+                f"{database_item.missing_rollout_references}",
+            )
+    else:
+        databases.add_row("none", "no", "0", "none", "0/0")
+    console.print(databases)
+
+    coverage = Table(title="Capability coverage")
+    coverage.add_column("Capability")
+    coverage.add_column("Available/total", justify="right")
+    coverage.add_column("Previous")
+    coverage.add_column("Current")
+    coverage.add_column("Status")
+    if report.capability_coverage:
+        for coverage_item in report.capability_coverage:
+            coverage.add_row(
+                coverage_item.capability,
+                f"{coverage_item.available}/{coverage_item.total}",
+                f"{coverage_item.previous_ratio:.1%}"
+                if coverage_item.previous_ratio is not None
+                else "unavailable",
+                f"{coverage_item.current_ratio:.1%}"
+                if coverage_item.current_ratio is not None
+                else "unavailable",
+                coverage_item.status,
+            )
+    else:
+        coverage.add_row("none", "0/0", "unavailable", "unavailable", "unavailable")
+    console.print(coverage)
+    _render_messages("Compatibility warnings", report.warnings, "yellow")
 
 
 @app.command("db-info")

@@ -13,7 +13,7 @@ The default path is platform-aware:
 Every database-using CLI command accepts `--db PATH`. Paths equal to or nested under the resolved
 Codex home are rejected before SQLite is opened.
 
-The current derived schema version is 12. Migrations are forward-only and apply exclusively to the
+The current derived schema version is 13. Migrations are forward-only and apply exclusively to the
 Codex Insights database.
 
 ## Entity relationships
@@ -173,6 +173,30 @@ erDiagram
         text confidence
         text taxonomy_version
     }
+    SESSION_COMPATIBILITY {
+        integer source_session_id PK,FK
+        text parser_version
+        text source_schema_fingerprint
+        text parse_status
+        boolean stale
+    }
+    SESSION_CAPABILITIES {
+        integer source_session_id PK,FK
+        text capability PK
+        text status
+        integer evidence_count
+    }
+    UNKNOWN_SOURCE_RECORDS {
+        integer source_session_id PK,FK
+        text unknown_kind PK
+        text unknown_name PK
+        integer record_count
+    }
+    COVERAGE_SNAPSHOTS {
+        integer index_run_id PK,FK
+        text capability PK
+        real coverage_ratio
+    }
 
     SOURCE_SESSIONS ||--|| USAGE : has
     SOURCE_SESSIONS ||--o{ EVENT_SUMMARY : summarizes
@@ -195,6 +219,10 @@ erDiagram
     GIT_COMMITS ||--o{ SESSION_COMMIT_ASSOCIATIONS : associated
     SOURCE_SESSIONS ||--o| SESSION_OUTCOMES : classified
     SOURCE_SESSIONS ||--o| SESSION_TASKS : classified
+    SOURCE_SESSIONS ||--o| SESSION_COMPATIBILITY : parsed_as
+    SOURCE_SESSIONS ||--o{ SESSION_CAPABILITIES : supports
+    SOURCE_SESSIONS ||--o{ UNKNOWN_SOURCE_RECORDS : observed
+    INDEX_RUNS ||--o{ COVERAGE_SNAPSHOTS : measures
 ```
 
 ## Table contracts
@@ -208,6 +236,14 @@ diagnosed without retaining raw rollout records.
 `client_source` for the catalogue's user-meaningful origin such as CLI or editor. Keeping these
 separate makes source filtering useful without confusing an unstable source value with adapter
 provenance.
+
+Schema version 13 adds `source_compatibility`, `session_compatibility`,
+`session_capabilities`, `unknown_source_records`, `compatibility_warnings`, and
+`coverage_snapshots`. It also extends `ingestion_state` with current and last-successful file
+identity, size, mtime, byte offset, parse time, error time, and staleness. Migration from schema 12
+does not alter existing sessions, usage, lineage, provenance, prompts, tool activity, Git
+associations, outcomes, tasks, or prompt features; existing rows receive conservative legacy
+compatibility provenance until their next successful parse.
 
 `usage` contains one observed aggregate row per session. `usage_semantics` distinguishes a source-reported
 `cumulative_total` from `summed_event_deltas`; `unavailable` means no trustworthy token record was

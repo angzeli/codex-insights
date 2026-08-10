@@ -134,6 +134,7 @@ def index_source(
                     parsed_sessions=parsed_sessions,
                     relationships=relationships,
                     codex_home=codex_home,
+                    run_id=run_id,
                 )
             )
             _reconcile_tool_activity(
@@ -531,6 +532,7 @@ def _reconcile_relationships(
     parsed_sessions: dict[str, ParsedSourceSession],
     relationships: tuple[NormalizedThreadRelationship, ...],
     codex_home: Path,
+    run_id: int,
 ) -> tuple[str, ...]:
     """Persist explicit topology and recompute only affected child accounting."""
 
@@ -541,6 +543,45 @@ def _reconcile_relationships(
     session_ids = set(candidates_by_id)
     topology = analyze_thread_topology(session_ids, relationships)
     warnings: list[str] = []
+    topology_warnings: list[tuple[str, int, str]] = []
+    if topology.orphan_parent_edges:
+        topology_warnings.append(
+            (
+                "spawn_edge_orphan_parent",
+                topology.orphan_parent_edges,
+                "Explicit spawn edges referenced parent sessions absent from the catalogue.",
+            )
+        )
+    if topology.orphan_child_edges:
+        topology_warnings.append(
+            (
+                "spawn_edge_orphan_child",
+                topology.orphan_child_edges,
+                "Explicit spawn edges referenced child sessions absent from the catalogue.",
+            )
+        )
+    if topology.cycle_nodes:
+        topology_warnings.append(
+            (
+                "spawn_graph_cycle",
+                len(topology.cycle_nodes),
+                "Explicit spawn relationships contain a cycle; lineage remains unavailable.",
+            )
+        )
+    warnings.extend(f"{message} Count: {count}." for _, count, message in topology_warnings)
+    with connection:
+        connection.executemany(
+            """
+            INSERT INTO compatibility_warnings(
+                index_run_id, warning_code, severity, warning_count,
+                message, parser_version, created_at
+            ) VALUES (?, ?, 'warning', ?, ?, ?, ?)
+            """,
+            (
+                (run_id, code, count, message, adapter.parser_version, _utc_now())
+                for code, count, message in topology_warnings
+            ),
+        )
     duplicate_children = {
         child
         for child in {item.child_source_session_id for item in relationships}
@@ -2366,6 +2407,27 @@ def _refresh_derived_capabilities(
                         now,
                     )
                     for item in derived
+                ),
+            )
+            capability_set = {
+                str(item["capability"]): str(item["status"])
+                for item in connection.execute(
+                    """
+                    SELECT capability, status FROM session_capabilities
+                    WHERE source_session_id = ? ORDER BY capability
+                    """,
+                    (session_id,),
+                )
+            }
+            connection.execute(
+                """
+                UPDATE session_compatibility
+                SET capability_set_json = ?
+                WHERE source_session_id = ?
+                """,
+                (
+                    json.dumps(capability_set, sort_keys=True, separators=(",", ":")),
+                    session_id,
                 ),
             )
 

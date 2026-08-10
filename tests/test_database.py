@@ -190,6 +190,132 @@ def test_event_provenance_database_migrates_to_prompt_fts(tmp_path: Path) -> Non
     assert ("prompts_fts", "table") in objects
 
 
+def test_schema_12_migration_preserves_phase_two_derived_rows(tmp_path: Path) -> None:
+    codex_home = tmp_path / "codex-home"
+    database = tmp_path / "index.sqlite3"
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            "CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)"
+        )
+        for version in range(1, 13):
+            connection.executescript(db_module._MIGRATIONS[version])
+            connection.execute(
+                "INSERT INTO schema_migrations VALUES (?, '2026-08-09T00:00:00Z')",
+                (version,),
+            )
+        connection.executescript(
+            f"""
+            INSERT INTO source_sessions(
+                id, source_session_id, source_type, source_home, archived,
+                first_ingested_at, last_ingested_at
+            ) VALUES
+                (1, 'parent', 'codex-local', '{codex_home}', 0, 't', 't'),
+                (2, 'child', 'codex-local', '{codex_home}', 0, 't', 't');
+            INSERT INTO usage(
+                source_session_id, usage_semantics, total_tokens,
+                token_update_count, updated_at
+            ) VALUES (2, 'cumulative_total', 120, 1, 't');
+            INSERT INTO thread_relationships(
+                id, source_type, source_home, relationship_type,
+                parent_source_session_id, child_source_session_id,
+                parent_session_id, child_session_id, last_seen_at
+            ) VALUES (1, 'codex-local', '{codex_home}', 'spawn',
+                      'parent', 'child', 1, 2, 't');
+            INSERT INTO token_lineage(
+                child_session_id, parent_session_id, deduplication_status,
+                confidence, evidence_type, matched_snapshot_count,
+                delta_consistency, algorithm_version, updated_at
+            ) VALUES (2, 1, 'inherited_exact', 'high', 'synthetic', 1,
+                      'exact', 'token-lineage-v1', 't');
+            INSERT INTO event_observations(
+                id, observed_session_id, source_ordinal, family_ordinal,
+                event_family, source_record_type, source_payload_type,
+                fingerprint, provenance_status, origin_session_id,
+                evidence_type, confidence, fingerprint_version,
+                provenance_algorithm_version, updated_at
+            ) VALUES (1, 1, 0, 0, 'user_message', 'event_msg', 'user_message',
+                      'fingerprint', 'origin', 1, 'synthetic', 'high',
+                      'event-fingerprint-v1', 'event-provenance-v1', 't');
+            INSERT INTO prompts(
+                id, prompt_id, origin_session_id, origin_event_id, source_ordinal,
+                prompt_ordinal, text, redaction_status, redaction_count,
+                original_character_count, stored_character_count, provenance_status,
+                provenance_confidence, user_authorship_evidence, fingerprint,
+                content_schema_version, first_indexed_at, last_indexed_at
+            ) VALUES (1, 'prompt', 1, 1, 0, 0, 'synthetic', 'none', 0, 9, 9,
+                      'origin', 'high', 'synthetic', 'fingerprint',
+                      'prompt-content-v1', 't', 't');
+            INSERT INTO tool_activity(
+                id, event_observation_id, observed_session_id, origin_session_id,
+                source_ordinal, operation_ordinal, tool_family, tool_name,
+                command_category, test_scope, result_status, provenance_status,
+                redacted, truncated, extraction_version, classifier_version,
+                updated_at
+            ) VALUES (1, 1, 1, 1, 0, 0, 'shell', 'exec', 'testing',
+                      'subset', 'success', 'origin', 0, 0, 'tool-v1',
+                      'command-v1', 't');
+            INSERT INTO repositories(
+                id, identity_key, display_name, identity_method, path_exists,
+                identity_version, first_seen_at, last_seen_at
+            ) VALUES (1, 'repo', 'repo', 'repository_path', 0, 'repo-v1', 't', 't');
+            INSERT INTO git_commits(
+                id, repository_id, commit_hash, committed_at, parent_count,
+                first_discovered_at, last_discovered_at
+            ) VALUES (1, 1, 'abc', 't', 1, 't', 't');
+            INSERT INTO session_commit_associations(
+                session_id, commit_id, confidence, evidence_type,
+                evidence_origin_session_id, evidence_explanation, ambiguous,
+                algorithm_version, updated_at
+            ) VALUES (1, 1, 'high', 'synthetic', 1, 'synthetic', 0, 'git-v1', 't');
+            INSERT INTO session_outcomes(
+                session_id, outcome, confidence, evidence_json, evidence_count,
+                classifier_version, updated_at
+            ) VALUES (1, 'success', 'high', '[]', 1, 'outcome-classifier-v1', 't');
+            INSERT INTO session_tasks(
+                session_id, action, domain, facets_json, confidence,
+                evidence_json, taxonomy_version, updated_at
+            ) VALUES (1, 'testing', 'software_engineering', '[]', 'high', '[]',
+                      'task-taxonomy-v1', 't');
+            INSERT INTO prompt_features(
+                prompt_id, character_length, stored_character_length, line_count,
+                structured_heading_count, has_acceptance_criteria,
+                requests_validation, path_reference_count, requests_commit,
+                requests_multiple_commits, has_explicit_non_goals,
+                has_read_only_constraint, approximate_requirement_count,
+                source_truncated, feature_version, requirement_heuristic_version,
+                updated_at
+            ) VALUES (1, 9, 9, 1, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0,
+                      'prompt-features-v1', 'approx-v1', 't');
+            """
+        )
+        before = {
+            table: connection.execute(f'SELECT COUNT(*) FROM "{table}"').fetchone()[0]
+            for table in (
+                "source_sessions",
+                "usage",
+                "token_lineage",
+                "event_observations",
+                "prompts",
+                "tool_activity",
+                "session_commit_associations",
+                "session_outcomes",
+                "session_tasks",
+                "prompt_features",
+            )
+        }
+        connection.commit()
+
+    with open_index(database, codex_home=codex_home) as connection:
+        after = {
+            table: connection.execute(f'SELECT COUNT(*) FROM "{table}"').fetchone()[0]
+            for table in before
+        }
+        version = connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0]
+
+    assert version == SCHEMA_VERSION
+    assert after == before
+
+
 def test_db_info_reports_empty_database(tmp_path: Path) -> None:
     codex_home = tmp_path / "codex-home"
     database = tmp_path / "index.sqlite3"

@@ -507,6 +507,7 @@ def parse_rollout(candidate: SourceSessionCandidate) -> ParsedSourceSession:
         candidate,
         normalized,
         valid_record_count=valid_records,
+        token_update_count=token_update_count,
         token_snapshot_count=len(token_snapshots),
         event_observation_count=len(event_observations),
         prompt_count=len(prompt_candidates),
@@ -658,6 +659,7 @@ def _parsed_capabilities(
     session: NormalizedSourceSession,
     *,
     valid_record_count: int,
+    token_update_count: int,
     token_snapshot_count: int,
     event_observation_count: int,
     prompt_count: int,
@@ -720,7 +722,7 @@ def _parsed_capabilities(
         "valid_jsonl_records",
         degraded=partial_final_line,
     )
-    observed(SourceCapability.TOKEN_USAGE, token_snapshot_count, "recognized_token_snapshots")
+    observed(SourceCapability.TOKEN_USAGE, token_update_count, "recognized_token_updates")
     observed(SourceCapability.TOKEN_LINEAGE, token_snapshot_count, "cumulative_token_vectors")
     observed(SourceCapability.PROMPT_CONTENT, prompt_count, "recognized_user_messages")
     observed(
