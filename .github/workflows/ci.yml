@@ -1,0 +1,97 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    name: Python ${{ matrix.python-version }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13", "3.14"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+      - name: Install development package
+        run: python -m pip install -e ".[dev]"
+      - name: Run tests
+        env:
+          CODEX_HOME: ${{ runner.temp }}/synthetic-codex-home
+        run: |
+          mkdir -p "$CODEX_HOME"
+          python -m pytest
+
+  quality:
+    name: Ruff and mypy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - run: python -m pip install -e ".[dev]"
+      - run: python -m ruff check .
+      - run: python -m mypy src
+
+  package:
+    name: Build and fresh-install artifacts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - run: python -m pip install build
+      - run: python -m build
+      - name: Install and smoke-test wheel
+        run: |
+          python -m venv "$RUNNER_TEMP/wheel-smoke"
+          "$RUNNER_TEMP/wheel-smoke/bin/python" -m pip install dist/*.whl
+          mkdir -p "$RUNNER_TEMP/synthetic-codex-home"
+          CODEX_HOME="$RUNNER_TEMP/synthetic-codex-home" "$RUNNER_TEMP/wheel-smoke/bin/codex-insights" --help
+          CODEX_HOME="$RUNNER_TEMP/synthetic-codex-home" "$RUNNER_TEMP/wheel-smoke/bin/codex-insights" version
+          CODEX_HOME="$RUNNER_TEMP/synthetic-codex-home" "$RUNNER_TEMP/wheel-smoke/bin/codex-insights" doctor
+      - name: Install and smoke-test sdist
+        run: |
+          python -m venv "$RUNNER_TEMP/sdist-smoke"
+          "$RUNNER_TEMP/sdist-smoke/bin/python" -m pip install dist/*.tar.gz
+          CODEX_HOME="$RUNNER_TEMP/synthetic-codex-home" "$RUNNER_TEMP/sdist-smoke/bin/codex-insights" version
+
+  macos-editable:
+    name: macOS editable-install smoke
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Normal install smoke
+        run: |
+          python -m venv "$RUNNER_TEMP/normal-install"
+          "$RUNNER_TEMP/normal-install/bin/python" -m pip install .
+          "$RUNNER_TEMP/normal-install/bin/python" -c "import codex_insights"
+          "$RUNNER_TEMP/normal-install/bin/codex-insights" version
+      - name: Editable install and hidden-pth guard
+        env:
+          CODEX_HOME: ${{ runner.temp }}/synthetic-codex-home
+        run: |
+          mkdir -p "$CODEX_HOME"
+          python -m venv "$RUNNER_TEMP/codex-insights-dev"
+          "$RUNNER_TEMP/codex-insights-dev/bin/python" -m pip install -e ".[dev]"
+          "$RUNNER_TEMP/codex-insights-dev/bin/python" scripts/editable_install_guard.py
+          "$RUNNER_TEMP/codex-insights-dev/bin/python" -c "import codex_insights"
+          "$RUNNER_TEMP/codex-insights-dev/bin/codex-insights" --help
