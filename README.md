@@ -11,6 +11,8 @@ The local-first command-line MVP is ready for daily use. It can audit an install
 incrementally index normalized session metadata, explore individual sessions, report token usage,
 audit cross-thread replay, search redacted origin-aware user prompts, analyze originated commands,
 correlate Git commits, classify outcomes/tasks, and generate offline weekly or monthly reports.
+It also provides explicit text-retention controls, safe normalized exports, consistent derived-index
+backups, and a guarded reset that never deletes Codex source history.
 
 ```text
 codex-insights --help
@@ -39,6 +41,10 @@ codex-insights outcomes --since 30d
 codex-insights tasks --by type
 codex-insights report weekly --format markdown
 codex-insights report monthly --format html --output ~/codex-month.html
+codex-insights privacy inspect
+codex-insights export --dataset usage --format json --output usage.json
+codex-insights backup-index ~/codex-insights-backup.sqlite3
+codex-insights reset-index --backup ~/before-reset.sqlite3
 ```
 
 Codex home resolution uses this precedence:
@@ -300,6 +306,53 @@ macOS, `%LOCALAPPDATA%\Codex Insights\index.sqlite3` on Windows, and
 `${XDG_DATA_HOME:-~/.local/share}/codex-insights/index.sqlite3` on other platforms. `--db PATH`
 overrides it. Codex Insights rejects a database path equal to or nested beneath the selected Codex
 home.
+
+## Privacy and derived-data control
+
+`privacy` explains what the local derived index stores and excludes. `privacy inspect` reports only
+category counts, policy flags, and locations—never prompt or command values.
+
+```bash
+codex-insights privacy
+codex-insights privacy inspect --json
+
+# Control text stored by future indexing. Metadata/counts remain available.
+codex-insights privacy config --store-prompts off
+codex-insights privacy config --store-command-text off
+
+# Removing already stored text is a separate, confirmed operation.
+codex-insights privacy purge prompts
+codex-insights privacy purge command-text
+```
+
+The defaults preserve existing Phase-II behavior: prompt text is origin-aware, redacted, and capped;
+command text is redacted and capped. Raw stdout/stderr and hidden reasoning are never a retention
+toggle. Re-enabling storage triggers a controlled reconciliation for sessions indexed while the
+setting was off. The default config path is
+`~/Library/Application Support/Codex Insights/config.json` on macOS,
+`%LOCALAPPDATA%\Codex Insights\config.json` on Windows, and
+`${XDG_CONFIG_HOME:-~/.config}/codex-insights/config.json` elsewhere.
+
+Export one normalized dataset at a time as stable `codex-insights-export-v1` JSON or
+spreadsheet-safe CSV:
+
+```bash
+codex-insights export --dataset sessions --output sessions.json
+codex-insights export --dataset usage --format csv --output usage.csv
+codex-insights export --dataset repositories --since 30d --output repositories.json
+```
+
+Additive token fields are explicitly named `reconciled_local_*`; per-session rollout fields are
+named `observed_rollout_*`. Prompt/command exports use only currently permitted stored redacted
+text. CSV prefixes formula-like text with an apostrophe. Existing files require `--overwrite`, and
+missing output parents require `--create-parents`.
+
+`backup-index DESTINATION` uses SQLite's consistent backup API and reports whether retained prompt
+or command bodies are included. `reset-index` validates and displays the real derived DB path,
+requires confirmation unless `--yes`, and optionally accepts an explicit `--backup PATH`. Reset
+deletes only the verified Insights DB and SQLite sidecars; the next `index` rebuilds from untouched
+Codex source data. See [docs/privacy.md](docs/privacy.md) for the threat model, path/symlink rules,
+purge semantics, and export schemas.
 
 ## Development setup
 

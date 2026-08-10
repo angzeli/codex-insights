@@ -16,8 +16,8 @@ Safety is therefore an architectural invariant, not an optional operating mode.
 - Never run unrestricted recursive `cat`, `rg`, `grep`, or equivalents over rollout history.
 - Use bounded discovery and parse only the minimum records needed for a declared analytic purpose.
 - Do not retain tool stdout/stderr, raw command output, assistant transcript, or environment content.
-  Searchable user prompts are allowed only through the separately reviewed origin, redaction, and
-  size policy in `docs/privacy.md`.
+  Searchable user prompts and bounded command text are allowed only through the separately reviewed
+  origin, redaction, size, retention, purge, and export policy in `docs/privacy.md`.
 - Tests must use committed synthetic fixtures or test-created temporary files, never real user
   history.
 
@@ -25,9 +25,10 @@ Safety is therefore an architectural invariant, not an optional operating mode.
 
 The preferred index stores normalized metadata and aggregates: timestamps, stable session identity,
 project or repository association, model name, token counts, coarse tool names and counts, and
-explainable classifications. Redacted user prompt text is the one reviewed searchable-content
-exception. Raw source records should not be copied. New fields require a purpose, a retention
-decision, and a sensitivity review.
+explainable classifications. Redacted user prompts and bounded redacted command text are the two
+reviewed content exceptions, and both can be disabled for future indexing and purged separately.
+Raw source records should not be copied. New fields require a purpose, a retention decision, and a
+sensitivity review.
 
 ## Safe discovery
 
@@ -44,13 +45,14 @@ generated from real rollout histories.
 
 ## Derived database separation
 
-The Codex Insights index is writable application state. Its default location is
-`~/.local/share/codex-insights/index.sqlite3`, not inside Codex home. Path checks resolve symlinks and
-reject any index path equal to or nested under the selected Codex home.
+The Codex Insights index is writable application state in the documented platform application-data
+directory, never inside Codex home. Path checks resolve symlinks, reject descendants, and compare
+existing targets against known source-file inodes so a hard-link alias cannot bypass separation.
 
 ## Future review gates
 
 Before implementing ingestion, validate source format recognition, read-only failure behavior,
 bounded parsing, redaction/minimization, fixture realism without user data, and index provenance.
-Before any export or dashboard feature, define exactly which fields leave the local index and make
-the user choose that scope explicitly.
+Exports select one normalized dataset explicitly, obey current content-retention policy, and use
+the stable schemas and destination safeguards defined in `docs/privacy.md`. A future dashboard must
+undergo the same field-by-field review.

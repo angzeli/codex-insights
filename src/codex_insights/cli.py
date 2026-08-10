@@ -21,6 +21,7 @@ from codex_insights.diagnostics import DeepDoctorReport, run_deep_diagnostics
 from codex_insights.git_cli import register_git_commands
 from codex_insights.history_cli import register_history_commands
 from codex_insights.indexer import index_source
+from codex_insights.maintenance_cli import register_maintenance_commands
 from codex_insights.outcome_cli import register_outcome_command
 from codex_insights.privacy import load_retention_policy
 from codex_insights.privacy_cli import register_privacy_commands
@@ -47,6 +48,7 @@ register_outcome_command(app)
 register_task_command(app)
 register_report_commands(app)
 register_privacy_commands(app)
+register_maintenance_commands(app)
 
 
 @app.command()

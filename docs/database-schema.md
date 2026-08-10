@@ -13,7 +13,7 @@ The default path is platform-aware:
 Every database-using CLI command accepts `--db PATH`. Paths equal to or nested under the resolved
 Codex home are rejected before SQLite is opened.
 
-The current derived schema version is 13. Migrations are forward-only and apply exclusively to the
+The current derived schema version is 14. Migrations are forward-only and apply exclusively to the
 Codex Insights database.
 
 ## Entity relationships
@@ -136,8 +136,15 @@ erDiagram
         text tool_name
         text command_category
         text command_fingerprint
+        text command_operation
         text result_status
         text provenance_status
+    }
+    CONTENT_RETENTION_STATE {
+        integer singleton PK
+        boolean store_prompts
+        boolean store_command_text
+        text indexed_at
     }
     REPOSITORIES {
         integer id PK
@@ -245,6 +252,13 @@ does not alter existing sessions, usage, lineage, provenance, prompts, tool acti
 associations, outcomes, tasks, or prompt features; existing rows receive conservative legacy
 compatibility provenance until their next successful parse.
 
+Schema version 14 adds the singleton `content_retention_state` and a privacy-safe
+`tool_activity.command_operation` marker. The state records the policy used by the latest completed
+index run so an off-to-on transition can reparse unchanged sessions and backfill only permitted
+content. The migration defaults legacy Phase-II indexes to prompt/command storage enabled, matching
+their prior behavior; user configuration can then disable future text storage without deleting
+existing rows.
+
 `usage` contains one observed aggregate row per session. `usage_semantics` distinguishes a source-reported
 `cumulative_total` from `summed_event_deltas`; `unavailable` means no trustworthy token record was
 observed. Schema version 3 makes each token metric nullable so an absent field remains different
@@ -282,9 +296,16 @@ length/structure, explicit acceptance or validation requests, path/commit/non-go
 and an approximate requirement count. It contains no quality score and no additional prompt copy.
 
 `tool_activity` stores normalized tool/command metadata for physical observations plus their explicit
-origin mapping. Command text is bounded and privacy-filtered; call IDs are digested; result rows retain
-only status, exit code, duration, and exact commit-hash evidence where applicable. Raw stdout/stderr,
-patch bodies, and arbitrary tool results are not stored.
+origin mapping. Command text is optional, bounded, and privacy-filtered. Command identity/counts use
+the retained fingerprint instead of text presence, and `command_operation` stores only the narrow
+non-sensitive `git_commit` marker required to preserve Git provenance after command-text purge. Call
+IDs are digested; result rows retain only status, exit code, duration, and exact commit-hash evidence
+where applicable. Raw stdout/stderr, patch bodies, and arbitrary tool results are not stored.
+
+`content_retention_state` records the prompt/command-text settings applied by the most recent index
+run. Persistent user policy itself lives in the separate platform config file, not in Codex home.
+Turning storage off does not delete previous content; explicit purge behavior is documented in
+`docs/privacy.md`.
 
 `repositories` provides stable local identities in priority order: normalized credential-free remote,
 common Git directory, then canonical repository path. `git_commits` stores read-only discovered commit
@@ -328,6 +349,12 @@ upserts deterministic prompt IDs, removes only derived prompt rows no longer pre
 session, and then synchronizes replay observations from the provenance table. An unchanged run does
 not rewrite prompt or FTS rows. Missing source rollouts retain the previously indexed derived rows,
 matching the session index's existing retention semantics.
+
+When prompt retention is disabled, prompt-content reconciliation is skipped and existing logical
+prompts remain until explicit purge. When command-text retention is disabled, new command rows keep
+fingerprints/categories/results but store null text; unchanged prior text is not implicitly purged.
+An off-to-on policy transition forces one controlled content reconciliation, after which unchanged
+indexing returns to normal size/mtime/parser-version incrementality.
 
 Prompt features, repository identities, Git associations, outcomes, and tasks are reconciled after
 session/event upserts. Each reconciler compares normalized values before writing, so an unchanged
