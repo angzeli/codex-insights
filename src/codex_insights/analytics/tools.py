@@ -13,6 +13,8 @@ from typing import Any
 from codex_insights.db import open_index
 from codex_insights.models import CommandCategory
 
+from .prefixes import sqlite_like_prefix
+
 
 @dataclass(frozen=True, slots=True)
 class ToolFilters:
@@ -302,10 +304,16 @@ def _resolve_session(connection: sqlite3.Connection, prefix: str | None) -> int 
     value = prefix.strip()
     if not value:
         raise ValueError("session prefix cannot be empty")
+    exact = connection.execute(
+        "SELECT id FROM source_sessions WHERE source_session_id = ?",
+        (value,),
+    ).fetchone()
+    if exact is not None:
+        return int(exact["id"])
     rows = connection.execute(
-        "SELECT id FROM source_sessions WHERE source_session_id LIKE ? "
+        "SELECT id FROM source_sessions WHERE source_session_id LIKE ? ESCAPE '\\' "
         "ORDER BY source_session_id LIMIT 2",
-        (value + "%",),
+        (sqlite_like_prefix(value),),
     ).fetchall()
     if len(rows) != 1:
         label = "No session matches" if not rows else "Session prefix is ambiguous"

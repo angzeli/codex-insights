@@ -7,6 +7,8 @@ from dataclasses import asdict, dataclass
 
 from codex_insights.models import EventFamily
 
+from .prefixes import sqlite_like_prefix
+
 
 class ProvenanceSessionNotFoundError(LookupError):
     """Raised when no indexed session matches a requested identifier."""
@@ -209,14 +211,21 @@ def _replay_counts(
 
 
 def _resolve_session(connection: sqlite3.Connection, prefix: str) -> tuple[int, str]:
+    value = prefix.strip()
+    exact = connection.execute(
+        "SELECT id, source_session_id FROM source_sessions WHERE source_session_id = ?",
+        (value,),
+    ).fetchone()
+    if exact is not None:
+        return int(exact["id"]), str(exact["source_session_id"])
     rows = connection.execute(
         """
         SELECT id, source_session_id FROM source_sessions
-        WHERE source_session_id LIKE ?
+        WHERE source_session_id LIKE ? ESCAPE '\\'
         ORDER BY source_session_id
         LIMIT 2
         """,
-        (f"{prefix}%",),
+        (sqlite_like_prefix(value),),
     ).fetchall()
     if not rows:
         raise ProvenanceSessionNotFoundError(prefix)

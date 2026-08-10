@@ -52,10 +52,21 @@ def test_exact_originated_commit_hash_is_high_and_inherited_child_is_excluded(
         ).fetchall()
     second = index_source(adapter, database, codex_home=codex_home)
     with sqlite3.connect(database) as connection:
+        connection.execute(
+            """
+            INSERT INTO source_sessions(
+                source_session_id, source_type, source_home, archived,
+                first_ingested_at, last_ingested_at
+            ) VALUES ('parent-longer', 'codex-local', ?, 0,
+                      '2026-08-10T00:00:00Z', '2026-08-10T00:00:00Z')
+            """,
+            (str(codex_home),),
+        )
         after = connection.execute(
             "SELECT confidence, evidence_type, evidence_origin_session_id "
             "FROM session_commit_associations"
         ).fetchall()
+        connection.commit()
         linked_sessions = connection.execute(
             """
             SELECT sessions.source_session_id
@@ -74,6 +85,7 @@ def test_exact_originated_commit_hash_is_high_and_inherited_child_is_excluded(
     assert linked_sessions == [("parent",)]
     assert report.associations[0].commit_hash == commit_hash
     assert report.associations[0].evidence_type == "originated_commit_result_hash"
+    assert len(list_session_commits(database, "parent", codex_home=codex_home)) == 1
     assert list_session_commits(database, "child", codex_home=codex_home) == ()
 
     cli = runner.invoke(

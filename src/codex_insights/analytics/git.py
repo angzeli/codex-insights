@@ -11,6 +11,8 @@ from typing import Any
 
 from codex_insights.db import open_index
 
+from .prefixes import sqlite_like_prefix
+
 
 class CommitNotFoundError(LookupError):
     """Raised when no indexed Git commit matches a hash prefix."""
@@ -170,11 +172,11 @@ def get_commit(
             SELECT commits.id
             FROM git_commits AS commits
             JOIN repositories AS repositories ON repositories.id = commits.repository_id
-            WHERE commits.commit_hash LIKE ?
+            WHERE commits.commit_hash LIKE ? ESCAPE '\\'
             ORDER BY repositories.identity_key, commits.commit_hash
             LIMIT 2
             """,
-            (prefix + "%",),
+            (sqlite_like_prefix(prefix),),
         ).fetchall()
         if not matches:
             raise CommitNotFoundError(f"No commit matches {commit_prefix!r}")
@@ -198,12 +200,22 @@ def list_session_commits(
 ) -> tuple[CommitAssociationItem, ...]:
     """Return all commit associations for an unambiguous session prefix."""
 
+    prefix = session_prefix.strip()
     with closing(open_index(database_path, codex_home=codex_home)) as connection:
-        sessions = connection.execute(
-            "SELECT id FROM source_sessions WHERE source_session_id LIKE ? "
-            "ORDER BY source_session_id LIMIT 2",
-            (session_prefix.strip() + "%",),
-        ).fetchall()
+        exact = connection.execute(
+            "SELECT id FROM source_sessions WHERE source_session_id = ?",
+            (prefix,),
+        ).fetchone()
+        sessions = (
+            [exact]
+            if exact is not None
+            else connection.execute(
+                "SELECT id FROM source_sessions "
+                "WHERE source_session_id LIKE ? ESCAPE '\\' "
+                "ORDER BY source_session_id LIMIT 2",
+                (sqlite_like_prefix(prefix),),
+            ).fetchall()
+        )
         if len(sessions) != 1:
             return ()
         rows = connection.execute(

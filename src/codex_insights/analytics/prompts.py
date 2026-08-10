@@ -11,6 +11,8 @@ from typing import Any
 
 from codex_insights.db import open_index
 
+from .prefixes import sqlite_like_prefix
+
 
 class PromptNotFoundError(LookupError):
     """Raised when no logical prompt matches an identifier prefix."""
@@ -254,15 +256,22 @@ def _filters(
         conditions.append("s.model = ? COLLATE NOCASE")
         parameters.append(filters.model)
     if filters.session:
-        conditions.append("s.source_session_id LIKE ?")
-        parameters.append(f"{filters.session}%")
+        conditions.append("s.source_session_id LIKE ? ESCAPE '\\'")
+        parameters.append(sqlite_like_prefix(filters.session))
     return (f"WHERE {' AND '.join(conditions)}" if conditions else "", parameters)
 
 
 def _resolve_prompt_id(connection: sqlite3.Connection, prefix: str) -> str:
+    exact = connection.execute(
+        "SELECT prompt_id FROM prompts WHERE prompt_id = ?",
+        (prefix,),
+    ).fetchone()
+    if exact is not None:
+        return str(exact["prompt_id"])
     rows = connection.execute(
-        "SELECT prompt_id FROM prompts WHERE prompt_id LIKE ? ORDER BY prompt_id LIMIT 2",
-        (f"{prefix}%",),
+        "SELECT prompt_id FROM prompts WHERE prompt_id LIKE ? ESCAPE '\\' "
+        "ORDER BY prompt_id LIMIT 2",
+        (sqlite_like_prefix(prefix),),
     ).fetchall()
     if not rows:
         raise PromptNotFoundError(prefix)

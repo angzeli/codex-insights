@@ -19,6 +19,8 @@ from codex_insights.analytics.usage import (
     resolve_timezone,
 )
 from codex_insights.cli import app
+from codex_insights.exporting import ExportDataset, build_export
+from codex_insights.privacy import ContentRetentionPolicy
 from scripts.synthetic_corpus import SyntheticCorpusConfig, generate_synthetic_corpus
 
 runner = CliRunner()
@@ -189,6 +191,12 @@ def _assert_reconciliation_invariants(
         timezone=zone,
         config_path=config,
     )
+    usage_export = build_export(
+        database,
+        codex_home=codex_home,
+        dataset=ExportDataset.USAGE,
+        policy=ContentRetentionPolicy(),
+    )
 
     assert sum(group.metrics.total_tokens or 0 for group in by_repo.groups) == (
         global_usage.metrics.total_tokens
@@ -199,6 +207,11 @@ def _assert_reconciliation_invariants(
     assert sum(group.count for group in tools.categories) == tools.originated_commands
     assert report.overview["reconciled_tokens"] == global_usage.metrics.total_tokens
     assert dashboard.overview["reconciled_tokens"] == global_usage.metrics.total_tokens
+    assert sum(
+        int(record["reconciled_local_total_tokens"])
+        for record in usage_export.records
+        if record["reconciled_local_total_tokens"] is not None
+    ) == global_usage.metrics.total_tokens
 
     with sqlite3.connect(database) as connection:
         logical_prompts, physical_prompts = connection.execute(

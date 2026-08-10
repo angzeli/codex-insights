@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
 from typer.testing import CliRunner
 
 from codex_insights import __version__
@@ -20,6 +21,44 @@ def test_help_smoke() -> None:
 
     assert result.exit_code == 0
     assert "Local-first, read-only" in result.stdout
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    (
+        ("version", "--help"),
+        ("doctor", "--help"),
+        ("audit-source", "--help"),
+        ("db-info", "--help"),
+        ("index", "--help"),
+        ("stats", "--help"),
+        ("usage", "--help"),
+        ("sessions", "--help"),
+        ("session", "--help"),
+        ("repos", "--help"),
+        ("models", "--help"),
+        ("prompts", "--help"),
+        ("prompt", "--help"),
+        ("search", "--help"),
+        ("tools", "--help"),
+        ("commands", "--help"),
+        ("commits", "--help"),
+        ("commit", "--help"),
+        ("outcomes", "--help"),
+        ("tasks", "--help"),
+        ("report", "--help"),
+        ("dashboard", "--help"),
+        ("privacy", "--help"),
+        ("export", "--help"),
+        ("backup-index", "--help"),
+        ("reset-index", "--help"),
+    ),
+)
+def test_public_command_help_is_available(arguments: tuple[str, ...]) -> None:
+    result = runner.invoke(app, list(arguments), env={"CODEX_HOME": "/synthetic/not-used"})
+
+    assert result.exit_code == 0
+    assert "Usage:" in result.stdout
 
 
 def test_version_smoke() -> None:

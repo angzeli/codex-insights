@@ -337,6 +337,45 @@ def test_db_info_reports_empty_database(tmp_path: Path) -> None:
         assert connection.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
 
 
+def test_failed_migration_rolls_back_schema_and_version(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    codex_home = tmp_path / "codex-home"
+    database = tmp_path / "index.sqlite3"
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            "CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)"
+        )
+        for version in range(1, SCHEMA_VERSION):
+            connection.executescript(db_module._MIGRATIONS[version])
+            connection.execute(
+                "INSERT INTO schema_migrations VALUES (?, '2026-08-10T00:00:00Z')",
+                (version,),
+            )
+        connection.commit()
+
+    migrations = dict(db_module._MIGRATIONS)
+    migrations[SCHEMA_VERSION] = """
+        CREATE TABLE migration_must_rollback(value TEXT);
+        INSERT INTO table_that_does_not_exist VALUES ('failure');
+    """
+    monkeypatch.setattr(db_module, "_MIGRATIONS", migrations)
+
+    with pytest.raises(sqlite3.OperationalError):
+        open_index(database, codex_home=codex_home)
+
+    with sqlite3.connect(database) as connection:
+        version = connection.execute(
+            "SELECT MAX(version) FROM schema_migrations"
+        ).fetchone()[0]
+        rolled_back = connection.execute(
+            "SELECT COUNT(*) FROM sqlite_schema WHERE name = 'migration_must_rollback'"
+        ).fetchone()[0]
+    assert version == SCHEMA_VERSION - 1
+    assert rolled_back == 0
+
+
 def test_db_info_cli_uses_explicit_safe_paths(tmp_path: Path) -> None:
     codex_home = tmp_path / "codex-home"
     database = tmp_path / "index.sqlite3"
