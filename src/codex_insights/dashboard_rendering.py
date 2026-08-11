@@ -9,6 +9,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from typing import Any
 
 from codex_insights.analytics.dashboard import DashboardData
+from codex_insights.visual_assets import load_visual_stylesheet
 
 
 def render_dashboard(data: DashboardData) -> str:
@@ -28,79 +29,11 @@ def render_dashboard(data: DashboardData) -> str:
 <meta name="color-scheme" content="dark light">
 <title>Codex Insights · Offline dashboard</title>
 <style>
-:root {{ color-scheme:dark; --bg:#0b0f14; --panel:#111820; --panel2:#0e141b;
---ink:#e7edf4; --muted:#8c99a8; --line:#24303c; --accent:#6ed5c2;
---accent2:#80a8ff; --warn:#e3b86a; --bad:#ef8d82; --good:#75d39d; }}
-@media (prefers-color-scheme:light) {{ :root {{ color-scheme:light; --bg:#f4f6f7;
---panel:#ffffff; --panel2:#f8fafb; --ink:#17212b; --muted:#667483; --line:#d9e0e5;
---accent:#087f70; --accent2:#315fbd; --warn:#936711; --bad:#b33b34; --good:#18794e; }} }}
-* {{ box-sizing:border-box }} html {{ background:var(--bg) }} body {{ margin:0; color:var(--ink);
-background:var(--bg); font:14px/1.5 ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,
-"Liberation Mono",monospace; font-variant-numeric:tabular-nums }}
-main {{ max-width:1240px; margin:auto; padding:38px 28px 72px }}
-header {{ display:grid; grid-template-columns:1fr auto; gap:24px; align-items:end;
-padding-bottom:24px; border-bottom:1px solid var(--line) }}
-h1,h2,h3,p {{ margin-top:0 }} h1 {{ margin-bottom:6px; font:650 32px/1.1 system-ui,sans-serif;
-letter-spacing:-.035em }} h2 {{ margin:0 0 16px; font:650 18px/1.25 system-ui,sans-serif;
-letter-spacing:-.015em }} h3 {{ margin:0 0 10px; color:var(--muted); font-size:12px;
-text-transform:uppercase; letter-spacing:.08em }} .eyebrow {{ color:var(--accent);
-font-size:11px; font-weight:700; letter-spacing:.12em; text-transform:uppercase }}
-.muted {{ color:var(--muted) }} .stamp {{ text-align:right; color:var(--muted); font-size:12px }}
-.filters {{ display:flex; flex-wrap:wrap; gap:7px; margin-top:16px }} .filter {{ border:1px solid
-var(--line); background:var(--panel2); padding:4px 8px; color:var(--muted) }}
-.primary {{ display:grid; grid-template-columns:repeat(5,minmax(130px,1fr)); gap:0;
-margin:28px 0 0; border:1px solid var(--line); background:var(--panel) }}
-.metric {{ min-width:0; padding:18px; border-right:1px solid var(--line) }}
-.metric:last-child {{ border-right:0 }} .metric-label {{ color:var(--muted); font-size:11px;
-text-transform:uppercase; letter-spacing:.07em }} .metric-value {{ margin-top:8px;
-font:650 25px/1 system-ui,sans-serif; letter-spacing:-.03em; overflow-wrap:anywhere }}
-.secondary {{ display:flex; flex-wrap:wrap; gap:20px; padding:12px 0 0; color:var(--muted) }}
-.secondary strong {{ color:var(--ink) }} section {{ margin-top:46px }} .section-head {{ display:flex;
-justify-content:space-between; gap:18px; align-items:baseline; border-bottom:1px solid var(--line);
-padding-bottom:9px; margin-bottom:16px }} .section-head h2 {{ margin:0 }}
-.control-input {{ position:absolute; opacity:0; pointer-events:none }} .controls {{ display:flex;
-flex-wrap:wrap; gap:6px; margin:20px 0 12px }} .control-label {{ cursor:pointer; border:1px solid
-var(--line); background:var(--panel2); color:var(--muted); padding:6px 10px }}
-.overview-view,.activity-order {{ display:none }} #overview-daily:checked ~ .overview-views .view-daily,
-#overview-weekly:checked ~ .overview-views .view-weekly,
-#overview-overall:checked ~ .overview-views .view-overall,
-#sort-date:checked ~ .activity-orders .sort-date,
-#sort-sessions:checked ~ .activity-orders .sort-sessions,
-#sort-tokens:checked ~ .activity-orders .sort-tokens {{ display:block }}
-#overview-daily:checked ~ .controls label[for="overview-daily"],
-#overview-weekly:checked ~ .controls label[for="overview-weekly"],
-#overview-overall:checked ~ .controls label[for="overview-overall"],
-#sort-date:checked ~ .controls label[for="sort-date"],
-#sort-sessions:checked ~ .controls label[for="sort-sessions"],
-#sort-tokens:checked ~ .controls label[for="sort-tokens"] {{ color:var(--ink); border-color:var(--accent) }}
-.grid-2 {{ display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:26px }}
-.panel {{ background:var(--panel); border:1px solid var(--line); padding:16px; overflow:auto }}
-table {{ width:100%; border-collapse:collapse }} th,td {{ padding:9px 10px; text-align:left;
-border-bottom:1px solid var(--line); vertical-align:top }} th {{ color:var(--muted);
-font-size:10px; letter-spacing:.07em; text-transform:uppercase; white-space:nowrap }}
-tbody tr:last-child td {{ border-bottom:0 }} td.num,th.num {{ text-align:right }}
-.bar-row {{ display:grid; grid-template-columns:minmax(8rem,10rem) minmax(12rem,1fr) 9rem; gap:10px;
-align-items:center; margin:8px 0 }} .bar-label {{ overflow:hidden; text-overflow:ellipsis;
-white-space:nowrap }} .track {{ height:8px; background:var(--line); overflow:hidden }}
-.bar {{ height:100%; min-width:1px; background:var(--accent) }} .bar.alt {{ background:var(--accent2) }}
-.bar-value {{ color:var(--muted); text-align:right; width:9rem; white-space:nowrap }} .quality {{ display:grid;
-grid-template-columns:repeat(3,minmax(0,1fr)); gap:1px; background:var(--line);
-border:1px solid var(--line) }} .quality-item {{ background:var(--panel); padding:14px }}
-.quality-item dt {{ color:var(--muted); font-size:11px }} .quality-item dd {{ margin:6px 0 0;
-font-weight:650 }} .method {{ color:var(--muted); max-width:980px }} code {{ color:var(--accent) }}
-.empty {{ color:var(--muted); padding:12px 0 }} .pill {{ display:inline-block; padding:2px 6px;
-border:1px solid var(--line); color:var(--muted); white-space:nowrap }}
-@media(max-width:900px) {{ .primary {{ grid-template-columns:repeat(2,1fr) }} .metric {{ border-bottom:1px
-solid var(--line) }} .grid-2,.quality {{ grid-template-columns:1fr }} header {{ grid-template-columns:1fr }}
-.stamp {{ text-align:left }} }} @media(max-width:560px) {{ main {{ padding:24px 14px 48px }}
-.primary {{ grid-template-columns:1fr }} .metric {{ border-right:0 }} .bar-row {{
-grid-template-columns:7.5rem minmax(7rem,1fr) 7.5rem }} .bar-value {{ width:7.5rem }} }}
-@media print {{ :root {{ color-scheme:light; --bg:#fff; --panel:#fff; --panel2:#fff; --ink:#111;
---muted:#555; --line:#ccc }} main {{ max-width:none; padding:0 }} section {{ break-inside:avoid }} }}
+{load_visual_stylesheet()}
 </style>
 </head>
-<body><main>
-<header><div><div class="eyebrow">Local analytics instrument</div><h1>Codex Insights</h1>
+<body class="ci-dashboard"><main class="ci-shell">
+<header class="ci-page-header"><div><div class="eyebrow">Local analytics instrument</div><h1>Codex Insights</h1>
 <p class="muted">A privacy-aware, read-only view of normalized local Codex telemetry.</p>
 <div class="filters">{_filter_chips(filters)}</div></div>
 <div class="stamp">dashboard { _escape(payload['schema_version']) }<br>

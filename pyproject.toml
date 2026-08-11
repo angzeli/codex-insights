@@ -30,6 +30,9 @@ codex-insights = "codex_insights.cli:main"
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools.package-data]
+codex_insights = ["assets/*.css"]
+
 [tool.pytest.ini_options]
 addopts = "-q"
 testpaths = ["tests"]

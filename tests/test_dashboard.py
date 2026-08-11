@@ -102,6 +102,9 @@ def test_dashboard_html_is_offline_content_free_and_escapes_hostile_metadata(
     rendered = render_dashboard(data)
 
     assert rendered.startswith("<!doctype html>")
+    assert '<body class="ci-dashboard">' in rendered
+    assert "--ci-canvas: #11181d" in rendered
+    assert "<link" not in rendered.casefold()
     assert "<script" not in rendered.casefold()
     assert "<img" not in rendered.casefold()
     assert "http://" not in rendered and "https://" not in rendered
@@ -115,8 +118,8 @@ def test_dashboard_html_is_offline_content_free_and_escapes_hostile_metadata(
     assert ">Active days<" not in rendered
     assert rendered.count("Sessions started per day") == 3
     assert rendered.count("Reconciled tokens by event day") == 3
-    assert "grid-template-columns:minmax(8rem,10rem) minmax(12rem,1fr) 9rem" in rendered
-    assert "width:9rem" in rendered
+    assert "grid-template-columns: minmax(8rem, 10rem) minmax(12rem, 1fr) 9rem" in rendered
+    assert "width: 9rem" in rendered
 
 
 def test_empty_dashboard_and_cli_write_guards(tmp_path: Path) -> None:

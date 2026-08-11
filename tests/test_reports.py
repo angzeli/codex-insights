@@ -123,6 +123,9 @@ def test_report_formats_are_parseable_offline_and_escape_unsafe_names(
     assert json_payload["overview"]["sessions"] == 4
     assert json_payload["overview"]["active_days"] == 3
     assert html_text.startswith("<!doctype html>")
+    assert '<body class="ci-report">' in html_text
+    assert "--ci-canvas: #11181d" in html_text
+    assert "<link" not in html_text.casefold()
     assert "Session/token activity days" in html_text
     assert ">Active days<" not in html_text
     assert "<script" not in html_text.casefold()

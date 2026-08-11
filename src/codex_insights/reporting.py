@@ -8,6 +8,7 @@ from enum import StrEnum
 from typing import Any
 
 from codex_insights.analytics.reports import AnalyticsReport
+from codex_insights.visual_assets import load_visual_stylesheet
 
 
 class ReportFormat(StrEnum):
@@ -135,30 +136,15 @@ def render_html(report: AnalyticsReport) -> str:
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark light">
 <title>{html.escape(title)}</title>
 <style>
-:root {{ color-scheme: light dark; --bg:#f7f8fa; --card:#fff; --ink:#172033;
---muted:#596579; --accent:#3157c8; --line:#d9deea; }}
-@media (prefers-color-scheme:dark) {{ :root {{ --bg:#11151d; --card:#1a202b;
---ink:#edf1f8; --muted:#aeb8c8; --accent:#8ca8ff; --line:#343e50; }} }}
-* {{ box-sizing:border-box }} body {{ margin:0; background:var(--bg); color:var(--ink);
-font:15px/1.5 system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif }}
-main {{ max-width:1120px; margin:auto; padding:32px 20px 64px }}
-h1 {{ margin-bottom:4px }} h2 {{ margin-top:32px }} .muted {{ color:var(--muted) }}
-.cards {{ display:grid; grid-template-columns:repeat(auto-fit,minmax(160px,1fr)); gap:12px }}
-.card,section {{ background:var(--card); border:1px solid var(--line); border-radius:10px;
-padding:16px }} section {{ margin-top:18px; overflow:auto }} .value {{ font-size:1.45rem;
-font-weight:700 }} table {{ border-collapse:collapse; width:100% }} th,td {{ text-align:left;
-padding:8px; border-bottom:1px solid var(--line); vertical-align:top }} th {{ color:var(--muted) }}
-.bar-row {{ display:grid; grid-template-columns:minmax(88px,140px) 1fr auto; gap:10px;
-align-items:center; margin:8px 0 }} .track {{ height:12px; background:var(--line);
-border-radius:8px; overflow:hidden }} .bar {{ height:100%; background:var(--accent) }}
-code {{ overflow-wrap:anywhere }}
-@media(max-width:620px) {{ .bar-row {{ grid-template-columns:1fr }} }}
+{load_visual_stylesheet()}
 </style>
 </head>
-<body><main>
-<header><h1>{html.escape(title)}</h1><p class="muted">{html.escape(str(period['start']))}
+<body class="ci-report"><main class="ci-shell">
+<header class="ci-page-header"><p class="eyebrow">Local analytics report</p>
+<h1>{html.escape(title)}</h1><p class="muted">{html.escape(str(period['start']))}
 to {html.escape(str(period['end']))} · {html.escape(report.timezone)} · generated
 {html.escape(str(data['generated_at']))}</p></header>
 <div class="cards">{_overview_cards(overview)}</div>
