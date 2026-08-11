@@ -81,15 +81,17 @@ def test_package_and_project_versions_are_consistent() -> None:
 def test_doctor_uses_synthetic_codex_home(synthetic_codex_home: Path) -> None:
     result = runner.invoke(
         app,
-        ["doctor", "--codex-home", str(synthetic_codex_home)],
+        ["doctor", "--codex-home", str(synthetic_codex_home), "--json"],
         env={"CODEX_HOME": "/synthetic/lower-precedence"},
     )
 
     assert result.exit_code == 0
-    assert "tests/fixtures" in result.stdout
-    assert "Codex home (explicit option)" in result.stdout
-    assert "Codex home exists" in result.stdout
-    assert "Sessions" in result.stdout
+    payload = json.loads(result.stdout)
+    assert payload["codex_home"] == str(synthetic_codex_home.resolve())
+    assert payload["codex_home_source"] == "explicit option"
+    assert payload["codex_home_exists"] is True
+    locations = {item["label"]: item for item in payload["locations"]}
+    assert locations["Sessions"]["exists"] is True
 
 
 def test_doctor_handles_missing_home(tmp_path: Path) -> None:

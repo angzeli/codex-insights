@@ -267,7 +267,7 @@ def _create_repository(path: Path, *, index: int) -> tuple[Path, str]:
             datetime(2026, 1, 1, tzinfo=UTC) + timedelta(minutes=index * 11 + 2)
         ),
     }
-    _git(path, "init", "--quiet", env=environment)
+    _git(path, "init", "--quiet", "--initial-branch=main", env=environment)
     _git(path, "add", "README.md", env=environment)
     _git(path, "commit", "--quiet", "-m", f"synthetic commit {index}", env=environment)
     commit_hash = _git(path, "rev-parse", "HEAD", env=environment).strip()

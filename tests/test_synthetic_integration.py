@@ -4,9 +4,11 @@ import hashlib
 import json
 import os
 import sqlite3
+import subprocess
 from datetime import date
 from pathlib import Path
 
+import pytest
 from typer.testing import CliRunner
 
 from codex_insights.analytics.dashboard import build_dashboard_data
@@ -24,6 +26,36 @@ from codex_insights.privacy import ContentRetentionPolicy
 from scripts.synthetic_corpus import SyntheticCorpusConfig, generate_synthetic_corpus
 
 runner = CliRunner()
+
+
+def test_synthetic_repositories_use_main_independent_of_host_default(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("GIT_CONFIG_COUNT", "1")
+    monkeypatch.setenv("GIT_CONFIG_KEY_0", "init.defaultBranch")
+    monkeypatch.setenv("GIT_CONFIG_VALUE_0", "master")
+    corpus = generate_synthetic_corpus(
+        tmp_path / "corpus",
+        config=SyntheticCorpusConfig(
+            session_count=2,
+            repository_count=2,
+            model_count=1,
+            seed=314159,
+        ),
+    )
+
+    branches = {
+        subprocess.run(
+            ("git", "-C", str(repository), "branch", "--show-current"),
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        for repository in corpus.repositories_root.iterdir()
+    }
+
+    assert branches == {"main"}
 
 
 def test_generated_corpus_exercises_end_to_end_workflow_without_source_mutation(
