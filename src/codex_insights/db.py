@@ -9,7 +9,7 @@ from pathlib import Path
 
 from codex_insights.path_safety import UnsafeDestinationError, validate_write_target
 
-SCHEMA_VERSION = 15
+SCHEMA_VERSION = 16
 
 _MIGRATION_1 = """
 CREATE TABLE source_sessions (
@@ -759,6 +759,59 @@ CREATE INDEX prompt_observations_event_idx
     ON prompt_observations(event_observation_id);
 """
 
+_MIGRATION_16 = """
+CREATE TABLE token_events (
+    source_session_id INTEGER NOT NULL REFERENCES source_sessions(id) ON DELETE CASCADE,
+    event_ordinal INTEGER NOT NULL CHECK (event_ordinal >= 0),
+    source_ordinal INTEGER NOT NULL CHECK (source_ordinal >= 0),
+    occurred_at TEXT,
+    event_kind TEXT NOT NULL CHECK (
+        event_kind IN ('cumulative_snapshot', 'event_delta')
+    ),
+    cumulative_input_tokens INTEGER CHECK (
+        cumulative_input_tokens IS NULL OR cumulative_input_tokens >= 0
+    ),
+    cumulative_cached_input_tokens INTEGER CHECK (
+        cumulative_cached_input_tokens IS NULL OR cumulative_cached_input_tokens >= 0
+    ),
+    cumulative_cache_write_input_tokens INTEGER CHECK (
+        cumulative_cache_write_input_tokens IS NULL OR cumulative_cache_write_input_tokens >= 0
+    ),
+    cumulative_output_tokens INTEGER CHECK (
+        cumulative_output_tokens IS NULL OR cumulative_output_tokens >= 0
+    ),
+    cumulative_reasoning_output_tokens INTEGER CHECK (
+        cumulative_reasoning_output_tokens IS NULL OR cumulative_reasoning_output_tokens >= 0
+    ),
+    cumulative_total_tokens INTEGER CHECK (
+        cumulative_total_tokens IS NULL OR cumulative_total_tokens >= 0
+    ),
+    delta_input_tokens INTEGER CHECK (
+        delta_input_tokens IS NULL OR delta_input_tokens >= 0
+    ),
+    delta_cached_input_tokens INTEGER CHECK (
+        delta_cached_input_tokens IS NULL OR delta_cached_input_tokens >= 0
+    ),
+    delta_cache_write_input_tokens INTEGER CHECK (
+        delta_cache_write_input_tokens IS NULL OR delta_cache_write_input_tokens >= 0
+    ),
+    delta_output_tokens INTEGER CHECK (
+        delta_output_tokens IS NULL OR delta_output_tokens >= 0
+    ),
+    delta_reasoning_output_tokens INTEGER CHECK (
+        delta_reasoning_output_tokens IS NULL OR delta_reasoning_output_tokens >= 0
+    ),
+    delta_total_tokens INTEGER CHECK (
+        delta_total_tokens IS NULL OR delta_total_tokens >= 0
+    ),
+    PRIMARY KEY (source_session_id, event_ordinal)
+);
+
+CREATE INDEX token_events_occurred_at_idx ON token_events(occurred_at);
+CREATE INDEX token_events_source_order_idx
+    ON token_events(source_session_id, source_ordinal);
+"""
+
 _MIGRATIONS = {
     1: _MIGRATION_1,
     2: _MIGRATION_2,
@@ -775,6 +828,7 @@ _MIGRATIONS = {
     13: _MIGRATION_13,
     14: _MIGRATION_14,
     15: _MIGRATION_15,
+    16: _MIGRATION_16,
 }
 
 

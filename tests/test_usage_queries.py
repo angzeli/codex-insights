@@ -234,6 +234,17 @@ def test_reconciled_totals_group_consistently_and_use_child_time_and_attribution
             """,
             (child, parent),
         )
+        connection.execute("DELETE FROM token_events WHERE source_session_id = ?", (child,))
+        connection.execute(
+            """
+            INSERT INTO token_events(
+                source_session_id, event_ordinal, source_ordinal, occurred_at,
+                event_kind, delta_input_tokens, delta_cached_input_tokens,
+                delta_output_tokens, delta_total_tokens
+            ) VALUES (?, 0, 1, '2026-08-09T00:05:00Z', 'event_delta', 15, 0, 5, 20)
+            """,
+            (child,),
+        )
         connection.commit()
 
     zone = resolve_timezone("UTC")

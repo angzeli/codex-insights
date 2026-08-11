@@ -264,6 +264,18 @@ class NormalizedTokenSnapshot:
 
     cumulative: UsageVector
     last_turn: UsageVector | None = None
+    source_ordinal: int = 0
+    occurred_at: datetime | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class NormalizedTokenEvent:
+    """One content-free token observation retained for temporal attribution."""
+
+    source_ordinal: int
+    occurred_at: datetime | None
+    cumulative: UsageVector | None = None
+    delta: UsageVector | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -426,6 +438,7 @@ class ParsedSourceSession:
     )
     semantic_warnings: tuple[SourceSemanticWarning, ...] = field(default_factory=tuple)
     token_snapshots: tuple[NormalizedTokenSnapshot, ...] = field(default_factory=tuple)
+    token_events: tuple[NormalizedTokenEvent, ...] = field(default_factory=tuple)
     event_observations: tuple[NormalizedEventObservation, ...] = field(default_factory=tuple)
     prompt_candidates: tuple[NormalizedPromptCandidate, ...] = field(default_factory=tuple)
     tool_call_candidates: tuple[NormalizedToolCallCandidate, ...] = field(default_factory=tuple)

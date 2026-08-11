@@ -33,7 +33,13 @@ Additive totals use reconciled local token contributions. Session median and p90
 totals. Prompts are logical origin-aware prompts; tools and commands are originated events; Git
 associations retain confidence; outcomes and task classifications retain UNKNOWN.
 
-The data-quality section reports token coverage, child-thread and reconciliation coverage, ambiguous
+Daily and Monday-starting weekly token totals use token-event timestamps in the requested timezone.
+Successive cumulative snapshots become nonnegative increments after proven lineage baselines are
+removed. Missing or inconsistent event time remains explicit in temporal coverage and is not
+assigned to a guessed reporting day.
+
+The data-quality section reports token coverage, event-time attribution and fallback coverage,
+child-thread and reconciliation coverage, ambiguous
 lineage, originated tool-event coverage, prompt-feature coverage, HIGH-confidence Git attribution,
 and UNKNOWN outcome/task counts. No prompt text or raw tool output appears in a report.
 

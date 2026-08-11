@@ -26,6 +26,7 @@ from codex_insights.analytics.usage import (
     UsageMetrics,
     UsageReconciliation,
     UsageReport,
+    UsageTemporalCoverage,
     get_usage_report,
     resolve_timezone,
 )
@@ -54,6 +55,7 @@ __all__ = [
     "UsageMetrics",
     "UsageReconciliation",
     "UsageReport",
+    "UsageTemporalCoverage",
     "get_usage_report",
     "resolve_timezone",
 ]

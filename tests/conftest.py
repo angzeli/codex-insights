@@ -223,6 +223,34 @@ def analytics_database(tmp_path: Path) -> tuple[Path, Path]:
         )
         connection.executemany(
             """
+            INSERT INTO token_events(
+                source_session_id, event_ordinal, source_ordinal, occurred_at,
+                event_kind, cumulative_input_tokens,
+                cumulative_cached_input_tokens, cumulative_output_tokens,
+                cumulative_total_tokens, delta_input_tokens,
+                delta_cached_input_tokens, delta_output_tokens, delta_total_tokens
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                (
+                    identifiers["session-alpha-one-1111"], 0, 1,
+                    "2026-08-01T00:30:00Z", "cumulative_snapshot",
+                    80, 10, 20, 100, None, None, None, None,
+                ),
+                (
+                    identifiers["session-beta-3333"], 0, 1,
+                    "2026-08-08T23:59:59Z", "event_delta",
+                    None, None, None, None, 20, 5, 5, 25,
+                ),
+                (
+                    identifiers["session-beta-3333"], 1, 2,
+                    "2026-08-09T00:05:00Z", "event_delta",
+                    None, None, None, None, 20, 0, 5, 25,
+                ),
+            ),
+        )
+        connection.executemany(
+            """
             INSERT INTO event_summary(source_session_id, category, event_count, updated_at)
             VALUES (?, ?, ?, '2026-08-09T01:00:00Z')
             """,

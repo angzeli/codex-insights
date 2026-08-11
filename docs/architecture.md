@@ -57,7 +57,10 @@ replace `CodexLocalAdapter` without changing analytics or presentation code.
 - `analytics/`: reusable read-only queries and future classifications over normalized data.
 - `cli.py`: user-facing commands and reports.
 - `history_cli.py`: compact terminal and JSON presentation for normalized history queries.
-- `analytics/usage.py`: token-coverage-aware grouping, percentiles, and timezone bucketing.
+- `analytics/temporal_usage.py`: content-free cumulative/delta validation and nonnegative
+  event-time contribution attribution with explicit fallback states.
+- `analytics/usage.py`: token-coverage-aware grouping, percentiles, and timezone bucketing over
+  shared temporal contributions.
 - `usage_cli.py`: compact usage tables and structured JSON output.
 - `analytics/prompts.py`: origin-aware prompt listing, detail, filters, and FTS5 queries.
 - `privacy.py`: bounded prompt redaction and content-schema policy.
@@ -93,11 +96,12 @@ resolution, deterministic ordering, aggregation, time-boundary semantics, and mi
 handling. It does not import the Codex-local adapter. `history_cli.py` converts those typed results
 to compact Rich tables or JSON and avoids absolute paths in ordinary session lists.
 
-Usage analytics follows the same boundary. It consumes observed usage plus normalized explicit
-thread relationships, preserves null fields as missing data, and uses lineage-adjusted incremental
-contributions only when exact vector evidence supports them. Repository/model and time attribution
-stay with the contributing child session. Presentation code receives typed results and never opens
-rollout files or Codex-owned databases.
+Usage analytics follows the same boundary. It consumes observed usage, normalized content-free
+token events, and explicit thread relationships; preserves null fields as missing data; and uses
+lineage-adjusted incremental contributions only when exact vector evidence supports them.
+Repository/model attribution stays with the contributing child, while daily/weekly token buckets
+use event time. Presentation code receives typed results and never opens rollout files or
+Codex-owned databases.
 
 Selected non-token records pass through a second privacy-safe adapter boundary. The adapter
 canonicalizes event-family semantics transiently and returns only normalized fingerprints,

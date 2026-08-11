@@ -67,6 +67,18 @@ def test_index_normalizes_catalogue_usage_events_and_missing_rollouts(
         assert modern_usage["output_tokens"] == 30
         assert modern_usage["reasoning_output_tokens"] is None
         assert modern_usage["total_tokens"] == 150
+        token_events = connection.execute(
+            """
+            SELECT token_events.occurred_at, token_events.cumulative_total_tokens
+            FROM token_events
+            JOIN source_sessions ON source_sessions.id = token_events.source_session_id
+            WHERE source_sessions.source_session_id = 'synthetic-thread-modern'
+            ORDER BY token_events.event_ordinal
+            """
+        ).fetchall()
+        assert [(row[0], row[1]) for row in token_events] == [
+            ("2026-08-09T00:01:00Z", 150)
+        ]
 
         legacy_usage = connection.execute(
             """
@@ -237,6 +249,17 @@ def test_cumulative_token_snapshots_are_not_summed_with_each_other_or_turn_delta
     assert parsed.session.usage.output_tokens == 30
     assert parsed.session.usage.total_tokens == 150
     assert parsed.session.usage.token_update_count == 3
+    assert [event.source_ordinal for event in parsed.token_events] == [0, 1, 2]
+    occurred_at = [
+        event.occurred_at.isoformat()
+        for event in parsed.token_events
+        if event.occurred_at
+    ]
+    assert occurred_at == [
+        "2026-08-09T00:01:00+00:00",
+        "2026-08-09T00:02:00+00:00",
+        "2026-08-09T00:03:00+00:00",
+    ]
 
 
 def test_changed_rollout_refreshes_only_that_session(

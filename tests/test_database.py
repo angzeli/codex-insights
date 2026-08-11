@@ -73,6 +73,7 @@ def test_index_schema_is_versioned_and_normalized(tmp_path: Path) -> None:
         "schema_migrations",
         "thread_relationships",
         "token_lineage",
+        "token_events",
         "event_observations",
         "event_replay_summary",
         "prompts",

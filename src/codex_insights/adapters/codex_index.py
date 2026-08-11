@@ -27,6 +27,7 @@ from codex_insights.models import (
     NormalizedPromptCandidate,
     NormalizedSourceSession,
     NormalizedThreadRelationship,
+    NormalizedTokenEvent,
     NormalizedTokenSnapshot,
     NormalizedToolCallCandidate,
     NormalizedToolResultCandidate,
@@ -40,7 +41,7 @@ from codex_insights.models import (
     UsageVector,
 )
 
-PARSER_VERSION = "codex-source-parser-v7"
+PARSER_VERSION = "codex-source-parser-v8"
 SOURCE_SCHEMA_FINGERPRINT_VERSION = "codex-source-schema-v1"
 MAX_ROLLOUT_LINE_BYTES = 1024 * 1024
 MAX_STATE_REFERENCE_CHECKS = 1_000
@@ -316,6 +317,7 @@ def parse_rollout(candidate: SourceSessionCandidate) -> ParsedSourceSession:
     summed_deltas = _empty_usage()
     token_update_count = 0
     token_snapshots: list[NormalizedTokenSnapshot] = []
+    token_events: list[NormalizedTokenEvent] = []
     event_observations: list[NormalizedEventObservation] = []
     prompt_candidates: list[NormalizedPromptCandidate] = []
     tool_call_candidates: list[NormalizedToolCallCandidate] = []
@@ -437,6 +439,16 @@ def parse_rollout(candidate: SourceSessionCandidate) -> ParsedSourceSession:
                     NormalizedTokenSnapshot(
                         cumulative=_usage_vector(cumulative),
                         last_turn=_usage_vector(deltas) if deltas is not None else None,
+                        source_ordinal=source_ordinal,
+                        occurred_at=timestamp,
+                    )
+                )
+                token_events.append(
+                    NormalizedTokenEvent(
+                        source_ordinal=source_ordinal,
+                        occurred_at=timestamp,
+                        cumulative=_usage_vector(cumulative),
+                        delta=_usage_vector(deltas) if deltas is not None else None,
                     )
                 )
                 token_update_count += 1
@@ -445,6 +457,13 @@ def parse_rollout(candidate: SourceSessionCandidate) -> ParsedSourceSession:
                     if value is not None:
                         previous = summed_deltas[key]
                         summed_deltas[key] = value + (previous or 0)
+                token_events.append(
+                    NormalizedTokenEvent(
+                        source_ordinal=source_ordinal,
+                        occurred_at=timestamp,
+                        delta=_usage_vector(deltas),
+                    )
+                )
                 token_update_count += 1
 
         after_handle = os.fstat(handle.fileno())
@@ -535,6 +554,7 @@ def parse_rollout(candidate: SourceSessionCandidate) -> ParsedSourceSession:
         ),
         semantic_warnings=_token_semantic_warnings(token_snapshots),
         token_snapshots=tuple(token_snapshots),
+        token_events=tuple(token_events),
         event_observations=tuple(event_observations),
         prompt_candidates=tuple(prompt_candidates),
         tool_call_candidates=tuple(tool_call_candidates),

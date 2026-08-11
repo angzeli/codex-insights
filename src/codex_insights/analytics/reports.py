@@ -296,7 +296,7 @@ def _collect_period(
     )
     period_data = _PeriodData(
         usage=usage,
-        active_days=len(day_usage.groups),
+        active_days=sum(group.period_start is not None for group in day_usage.groups),
         repository_count=0,
         model_count=0,
         originated_commands=tools.originated_commands,
@@ -322,7 +322,7 @@ def _collect_period(
     )
     period_data = _PeriodData(
         usage=usage,
-        active_days=len(day_usage.groups),
+        active_days=sum(group.period_start is not None for group in day_usage.groups),
         repository_count=len(repository_usage.groups),
         model_count=len(model_usage.groups),
         originated_commands=tools.originated_commands,
@@ -431,7 +431,7 @@ def _collect_period(
     )
     overview = {
         "sessions": usage.metrics.session_count,
-        "active_days": len(day_usage.groups),
+        "active_days": sum(group.period_start is not None for group in day_usage.groups),
         "repositories": len(repository_usage.groups),
         "models": len(model_usage.groups),
         "reconciled_tokens": usage.metrics.total_tokens,
@@ -453,6 +453,7 @@ def _collect_period(
             reconciliation.ambiguous_children + reconciliation.cyclic_children
         ),
         "ambiguous_lineage_observed_tokens": reconciliation.ambiguous_observed_tokens,
+        "temporal_attribution": usage.temporal_coverage.to_dict(),
         "tool_event_provenance": {
             **tools.provenance.to_dict(),
             "originated_fraction": event_origin_fraction,

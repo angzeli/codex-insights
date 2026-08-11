@@ -13,7 +13,7 @@ The default path is platform-aware:
 Every database-using CLI command accepts `--db PATH`. Paths equal to or nested under the resolved
 Codex home are rejected before SQLite is opened.
 
-The current derived schema version is 14. Migrations are forward-only and apply exclusively to the
+The current derived schema version is 16. Migrations are forward-only and apply exclusively to the
 Codex Insights database.
 
 ## Entity relationships
@@ -86,6 +86,15 @@ erDiagram
         text confidence
         integer baseline_total_tokens
         integer incremental_total_tokens
+    }
+    TOKEN_EVENTS {
+        integer source_session_id PK,FK
+        integer event_ordinal PK
+        integer source_ordinal
+        text occurred_at
+        text event_kind
+        integer cumulative_total_tokens
+        integer delta_total_tokens
     }
     EVENT_OBSERVATIONS {
         integer id PK
@@ -210,6 +219,7 @@ erDiagram
     SOURCE_SESSIONS ||--o{ THREAD_RELATIONSHIPS : parent
     SOURCE_SESSIONS ||--o| THREAD_RELATIONSHIPS : child
     SOURCE_SESSIONS ||--o| TOKEN_LINEAGE : reconciles
+    SOURCE_SESSIONS ||--o{ TOKEN_EVENTS : reports
     SOURCE_SESSIONS ||--o{ EVENT_OBSERVATIONS : observes
     EVENT_OBSERVATIONS ||--o{ EVENT_OBSERVATIONS : originates
     THREAD_RELATIONSHIPS ||--o{ EVENT_REPLAY_SUMMARY : summarizes
@@ -263,6 +273,11 @@ Schema version 15 adds child-key indexes for event-linked tool and prompt rows. 
 not change stored analytics; they keep SQLite foreign-key cascades bounded when a changed rollout's
 normalized event observations are transactionally replaced.
 
+Schema version 16 adds `token_events`, a content-free sequence of token-event ordinals, UTC
+timestamps, cumulative vectors, and delta vectors. It stores no message, prompt, command, tool
+output, raw JSONL, or hidden reasoning. Parser version 8 forces a controlled reparse to backfill
+these rows; pre-existing aggregate usage remains intact until that reparse succeeds.
+
 `usage` contains one observed aggregate row per session. `usage_semantics` distinguishes a source-reported
 `cumulative_total` from `summed_event_deltas`; `unavailable` means no trustworthy token record was
 observed. Schema version 3 makes each token metric nullable so an absent field remains different
@@ -278,6 +293,12 @@ confidence, exact matched-snapshot count, inherited baseline vector, child-exclu
 vector, and whether `last_token_usage` corroborates the cumulative difference. It does not store
 messages, raw rollout lines, or tool output. `accounted_usage` is a view that preserves the
 observed `usage` vector while exposing a lineage-adjusted aggregate contribution.
+
+`token_events` preserves the minimum evidence needed to distribute the already-reconciled
+contribution over time. Cumulative snapshots are differenced in source order after subtracting only
+a proven exact/prefix lineage baseline. Delta-only source variants retain their normalized event
+deltas. Missing timestamps and inconsistent sequences are marked as temporally unattributed rather
+than assigned to a guessed day.
 
 `event_summary` stores counts keyed by normalized categories. It does not store event payloads,
 message bodies, command arguments, patches, stdout, stderr, environment dumps, or hidden reasoning.
@@ -345,7 +366,7 @@ only that session and increments the run's failed count.
 Size plus nanosecond mtime is the initial file-change signal. Parser-version and recognized
 source-schema-version changes also force a reparse. Unchanged files retain their usage and event
 rows byte-for-byte unless catalogue metadata changed. Reparsed sessions replace their one usage
-row, category counts, and compact semantic observations transactionally, so rerunning the index
+row, token events, category counts, and compact semantic observations transactionally, so rerunning the index
 cannot create duplicates.
 
 Prompt extraction participates in the same parser-version invalidation. A reparsed origin session
@@ -399,13 +420,16 @@ Mean, median, and nearest-rank p90 tokens/session remain distributions of observ
 totals. They are not additive account totals and are labelled as observed in terminal output.
 
 Repository grouping uses `repository_root` as its identity and `repository_name` as its display
-label. Model grouping uses the normalized model/provider pair. Day and Monday-starting week groups
-convert UTC session timestamps into the requested local or IANA timezone before assigning buckets.
-Sessions/day uses the selected calendar window; with no time filter it uses the inclusive span from
-the first to latest matching activity date.
+label. Model grouping uses the normalized model/provider pair. Day and Monday-starting week token
+groups convert token-event timestamps into the requested local or IANA timezone; session counts use
+logical-session start time. A resumed session can therefore contribute tokens on several days while
+remaining one logical session.
 
-Incremental child usage is attributed to the child's own start time, normalized repository, and
-model. A parent outside a selected time window does not reintroduce its historical baseline into
-that window. Local rollout telemetry is not guaranteed to equal OpenAI billing, quota, or other
+Incremental child usage is attributed at its token-event time to the child's own normalized
+repository and model. A parent outside a selected time window does not reintroduce its historical
+baseline into that window. Non-monotonic cumulative vectors, event-time regressions, missing event
+rows, and missing timestamps never produce negative increments or guessed dates. The fallback and
+temporally unattributed amount are exposed in JSON, CLI, report, and dashboard coverage. Local
+rollout telemetry is not guaranteed to equal OpenAI billing, quota, or other
 server-side accounting, and Codex Insights does not claim to reproduce a private accounting
 algorithm.

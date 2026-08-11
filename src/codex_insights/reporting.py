@@ -101,6 +101,8 @@ def render_markdown(report: AnalyticsReport) -> str:
         "## Methodology",
         "",
         "- Additive totals use reconciled local token contributions.",
+        "- Daily and weekly token totals use nonnegative increments at token-event time; "
+        "unattributed timing remains explicit.",
         "- Median and p90 use observed per-rollout session totals.",
         "- Prompts are logical and origin-aware; commands are originated events.",
         "- Git associations retain confidence tiers; outcomes retain `unknown`.",
@@ -171,8 +173,9 @@ metric_path=("metrics", "session_count"))}{_html_activity_table(activity)}</sect
 <section><h2>Interesting sessions</h2>{interesting}</section>
 <section><h2>Data quality</h2><pre>{quality_json}</pre></section>
 <section><h2>Previous-period comparison</h2><pre>{previous_json}</pre></section>
-<section><h2>Methodology</h2><p>Additive totals use reconciled local contributions;
-session distributions use observed rollout totals. Prompts and commands are origin-aware. Git and
+<section><h2>Methodology</h2><p>Additive totals use reconciled local contributions. Daily and
+weekly totals use token-event time, with unattributed timing explicit; session distributions use
+observed rollout totals. Prompts and commands are origin-aware. Git and
 outcome evidence retain confidence and unknown states. Prompt-pattern comparisons are descriptive,
 not causal. Local telemetry may differ from server-side billing or quota accounting.</p></section>
 </main></body></html>
@@ -342,10 +345,14 @@ def _quality_markdown(value: object) -> str:
     token = _mapping(quality.get("token_coverage"))
     provenance = _mapping(quality.get("tool_event_provenance"))
     git = _mapping(quality.get("git_attribution"))
+    temporal = _mapping(quality.get("temporal_attribution"))
     return _markdown_table(
         ("Coverage / uncertainty", "Value"),
         (
             ("Token records", f"{token.get('sessions_with_data', 0)}/{token.get('sessions', 0)}"),
+            ("Event-time attribution", _percent(temporal.get("attributed_fraction"))),
+            ("Temporally unattributed tokens", _number(temporal.get("unattributed_total_tokens"))),
+            ("Temporal fallback sessions", _number(temporal.get("fallback_sessions"))),
             ("Child threads", _number(quality.get("child_threads"))),
             (
                 "Token reconciliation coverage",

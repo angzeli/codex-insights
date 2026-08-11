@@ -58,6 +58,14 @@ from codex_insights.taxonomy import TASK_TAXONOMY_VERSION, reconcile_task_taxono
 MIN_COVERAGE_BASELINE_SESSIONS = 10
 COVERAGE_REGRESSION_ABSOLUTE_DROP = 0.35
 COVERAGE_REGRESSION_RELATIVE_RATIO = 0.50
+_USAGE_VECTOR_FIELDS = (
+    "input_tokens",
+    "cached_input_tokens",
+    "cache_write_input_tokens",
+    "output_tokens",
+    "reasoning_output_tokens",
+    "total_tokens",
+)
 
 
 class IndexSourceAdapter(Protocol):
@@ -312,6 +320,7 @@ def _index_candidate(
         with connection:
             session_id, is_new, _ = _upsert_session_metadata(connection, parsed.session)
             _replace_usage(connection, session_id, parsed.session.usage)
+            _replace_token_events(connection, session_id, parsed)
             _replace_event_summary(connection, session_id, parsed.session)
             _replace_event_observations(connection, session_id, parsed)
             _replace_session_capabilities(
@@ -1951,6 +1960,54 @@ def _replace_usage(
             usage.token_update_count,
             _utc_now(),
         ),
+    )
+
+
+def _replace_token_events(
+    connection: sqlite3.Connection,
+    session_id: int,
+    parsed: ParsedSourceSession,
+) -> None:
+    """Replace content-free token observations in source order."""
+
+    connection.execute(
+        "DELETE FROM token_events WHERE source_session_id = ?",
+        (session_id,),
+    )
+    rows: list[tuple[object, ...]] = []
+    for event_ordinal, event in enumerate(parsed.token_events):
+        cumulative = event.cumulative
+        delta = event.delta
+        rows.append(
+            (
+                session_id,
+                event_ordinal,
+                event.source_ordinal,
+                _format_datetime(event.occurred_at),
+                "cumulative_snapshot" if cumulative is not None else "event_delta",
+                *(
+                    getattr(cumulative, field) if cumulative is not None else None
+                    for field in _USAGE_VECTOR_FIELDS
+                ),
+                *(
+                    getattr(delta, field) if delta is not None else None
+                    for field in _USAGE_VECTOR_FIELDS
+                ),
+            )
+        )
+    connection.executemany(
+        """
+        INSERT INTO token_events(
+            source_session_id, event_ordinal, source_ordinal, occurred_at, event_kind,
+            cumulative_input_tokens, cumulative_cached_input_tokens,
+            cumulative_cache_write_input_tokens, cumulative_output_tokens,
+            cumulative_reasoning_output_tokens, cumulative_total_tokens,
+            delta_input_tokens, delta_cached_input_tokens,
+            delta_cache_write_input_tokens, delta_output_tokens,
+            delta_reasoning_output_tokens, delta_total_tokens
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        rows,
     )
 
 

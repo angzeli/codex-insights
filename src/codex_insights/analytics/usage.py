@@ -4,18 +4,27 @@ from __future__ import annotations
 
 import math
 import sqlite3
-from collections import defaultdict
+from collections import Counter, defaultdict
 from contextlib import closing
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta, tzinfo
 from enum import StrEnum
 from pathlib import Path
 from statistics import fmean, median
-from typing import Any, cast
+from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from codex_insights.analytics.queries import SessionFilters
+from codex_insights.analytics.temporal_usage import (
+    VECTOR_FIELDS,
+    StoredTokenEvent,
+    TemporalAttribution,
+    TemporalContribution,
+    attribute_session_usage,
+    sum_vectors,
+)
 from codex_insights.db import open_index
+from codex_insights.models import UsageVector
 
 TOKEN_FIELDS = (
     "total_tokens",
@@ -147,6 +156,32 @@ class UsageReconciliation:
 
 
 @dataclass(frozen=True, slots=True)
+class UsageTemporalCoverage:
+    """Coverage of event-time attribution for the selected session set."""
+
+    complete_sessions: int
+    partial_sessions: int
+    fallback_sessions: int
+    unavailable_sessions: int
+    attributed_total_tokens: int | None
+    unattributed_total_tokens: int | None
+    attributed_fraction: float | None
+    fallback_reasons: tuple[tuple[str, int], ...]
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "complete_sessions": self.complete_sessions,
+            "partial_sessions": self.partial_sessions,
+            "fallback_sessions": self.fallback_sessions,
+            "unavailable_sessions": self.unavailable_sessions,
+            "attributed_total_tokens": self.attributed_total_tokens,
+            "unattributed_total_tokens": self.unattributed_total_tokens,
+            "attributed_fraction": self.attributed_fraction,
+            "fallback_reasons": dict(self.fallback_reasons),
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class UsageGroup:
     """One repository, model, or local-time period in a usage report."""
 
@@ -180,6 +215,7 @@ class UsageReport:
     until: datetime | None
     metrics: UsageMetrics
     groups: tuple[UsageGroup, ...]
+    temporal_coverage: UsageTemporalCoverage
     reconciliation: UsageReconciliation | None = None
 
     def to_dict(self) -> dict[str, object]:
@@ -190,10 +226,19 @@ class UsageReport:
             "until": _json_datetime(self.until),
             "metrics": self.metrics.to_dict(),
             "groups": [group.to_dict() for group in self.groups],
+            "temporal_coverage": self.temporal_coverage.to_dict(),
             "reconciliation": (
                 self.reconciliation.to_dict() if self.reconciliation is not None else None
             ),
         }
+
+
+@dataclass(frozen=True, slots=True)
+class _TemporalSession:
+    row: sqlite3.Row
+    attribution: TemporalAttribution
+    contributions: tuple[TemporalContribution, ...]
+    scoped_usage: UsageVector
 
 
 def resolve_timezone(value: str | None) -> TimezoneSpec:
@@ -241,6 +286,12 @@ def get_usage_report(
             _usage_query(selected),
             _usage_parameters(selected),
         ).fetchall()
+        event_rows = connection.execute(
+            """
+            SELECT * FROM token_events
+            ORDER BY source_session_id, event_ordinal
+            """
+        ).fetchall()
         orphan_relationships = int(
             connection.execute(
                 "SELECT COUNT(*) FROM thread_relationships "
@@ -248,10 +299,11 @@ def get_usage_report(
             ).fetchone()[0]
         )
 
-    scope_start, scope_end = _scope_dates(rows, selected, zone.timezone, reference)
+    sessions = _temporal_sessions(rows, event_rows, selected)
+    scope_start, scope_end = _scope_dates(sessions, selected, zone.timezone, reference)
     scope_days = _calendar_days(scope_start, scope_end)
-    metrics = _metrics(rows, scope_days)
-    groups = _groups(rows, breakdown, zone.timezone, scope_start, scope_end)
+    metrics = _session_metrics(sessions, scope_days)
+    groups = _groups(sessions, breakdown, zone.timezone, scope_start, scope_end, selected)
     if top is not None:
         groups = groups[:top]
     return UsageReport(
@@ -261,18 +313,17 @@ def get_usage_report(
         until=selected.until,
         metrics=metrics,
         groups=groups,
+        temporal_coverage=_temporal_coverage(sessions),
         reconciliation=(
-            _reconciliation(rows, orphan_relationships) if include_reconciliation else None
+            _reconciliation(sessions, orphan_relationships)
+            if include_reconciliation
+            else None
         ),
     )
 
 
 def _usage_query(filters: SessionFilters) -> str:
     conditions: list[str] = []
-    if filters.since is not None:
-        conditions.append("s.started_at >= ?")
-    if filters.until is not None:
-        conditions.append("s.started_at < ?")
     if filters.repository:
         if filters.repository.casefold() in {"outside-git", "non-git", "none"}:
             conditions.append("s.repository_root IS NULL")
@@ -289,18 +340,23 @@ def _usage_query(filters: SessionFilters) -> str:
         conditions.append("COALESCE(tasks.domain, 'unknown') = ?")
     where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
     return f"""
-        SELECT s.source_session_id, s.started_at, s.repository_root, s.repository_name,
+        SELECT s.id, s.source_session_id, s.started_at, s.repository_root, s.repository_name,
                s.model, s.model_provider, u.usage_semantics,
                u.aggregate_total_tokens AS total_tokens,
                u.aggregate_input_tokens AS input_tokens,
                u.aggregate_cached_input_tokens AS cached_input_tokens,
+               u.aggregate_cache_write_input_tokens AS cache_write_input_tokens,
                u.aggregate_output_tokens AS output_tokens,
                u.aggregate_reasoning_output_tokens AS reasoning_output_tokens,
                u.observed_total_tokens,
                u.accounting_status,
-               u.inherited_baseline_total_tokens
+               u.inherited_baseline_total_tokens,
+               tl.baseline_input_tokens, tl.baseline_cached_input_tokens,
+               tl.baseline_cache_write_input_tokens, tl.baseline_output_tokens,
+               tl.baseline_reasoning_output_tokens, tl.baseline_total_tokens
         FROM source_sessions AS s
         LEFT JOIN accounted_usage AS u ON u.source_session_id = s.id
+        LEFT JOIN token_lineage AS tl ON tl.child_session_id = s.id
         LEFT JOIN session_tasks AS tasks ON tasks.session_id = s.id
         {where}
         ORDER BY s.started_at IS NULL, s.started_at ASC, s.source_session_id ASC
@@ -309,10 +365,6 @@ def _usage_query(filters: SessionFilters) -> str:
 
 def _usage_parameters(filters: SessionFilters) -> tuple[object, ...]:
     parameters: list[object] = []
-    if filters.since is not None:
-        parameters.append(_database_datetime(filters.since))
-    if filters.until is not None:
-        parameters.append(_database_datetime(filters.until))
     if filters.repository and filters.repository.casefold() not in {
         "outside-git",
         "non-git",
@@ -329,33 +381,32 @@ def _usage_parameters(filters: SessionFilters) -> tuple[object, ...]:
 
 
 def _groups(
-    rows: list[sqlite3.Row],
+    sessions: list[_TemporalSession],
     breakdown: UsageBreakdown,
     timezone: tzinfo,
     scope_start: date | None,
     scope_end: date | None,
+    filters: SessionFilters,
 ) -> tuple[UsageGroup, ...]:
     if breakdown is UsageBreakdown.SUMMARY:
         return ()
-
-    grouped: dict[object, list[sqlite3.Row]] = defaultdict(list)
-    for row in rows:
-        grouped[_group_key(row, breakdown, timezone)].append(row)
-
-    results: list[UsageGroup] = []
-    for key, grouped_rows in grouped.items():
-        period_start, period_end = _period_dates(key, breakdown)
-        days = _group_days(breakdown, period_start, period_end, scope_start, scope_end)
-        results.append(
-            _group_result(
-                key,
-                grouped_rows,
-                breakdown,
-                days,
-                period_start,
-                period_end,
-            )
+    if breakdown in {UsageBreakdown.DAY, UsageBreakdown.WEEK}:
+        results = _period_groups(
+            sessions,
+            breakdown,
+            timezone,
+            scope_start,
+            scope_end,
+            include_unattributed=filters.since is None and filters.until is None,
         )
+    else:
+        grouped: dict[object, list[_TemporalSession]] = defaultdict(list)
+        for session in sessions:
+            grouped[_dimension_key(session.row, breakdown)].append(session)
+        results = [
+            _dimension_group(key, grouped_sessions, breakdown, scope_start, scope_end)
+            for key, grouped_sessions in grouped.items()
+        ]
     if breakdown in {UsageBreakdown.DAY, UsageBreakdown.WEEK}:
         results.sort(key=lambda group: (group.period_start is None, group.period_start, group.key))
     else:
@@ -371,69 +422,64 @@ def _groups(
     return tuple(results)
 
 
-def _group_key(row: sqlite3.Row, breakdown: UsageBreakdown, timezone: tzinfo) -> object:
+def _dimension_key(row: sqlite3.Row, breakdown: UsageBreakdown) -> object:
     if breakdown is UsageBreakdown.REPOSITORY:
         return row["repository_root"]
-    if breakdown is UsageBreakdown.MODEL:
-        return (row["model"], row["model_provider"])
-    started = _stored_datetime(row["started_at"])
-    if started is None:
-        return None
-    local_date = started.astimezone(timezone).date()
-    if breakdown is UsageBreakdown.WEEK:
-        return local_date - timedelta(days=local_date.weekday())
-    return local_date
+    return (row["model"], row["model_provider"])
 
 
-def _group_result(
+def _dimension_group(
     key: object,
-    rows: list[sqlite3.Row],
+    sessions: list[_TemporalSession],
     breakdown: UsageBreakdown,
-    days: int | None,
-    period_start: date | None,
-    period_end: date | None,
+    scope_start: date | None,
+    scope_end: date | None,
 ) -> UsageGroup:
+    days = _calendar_days(scope_start, scope_end)
     if breakdown is UsageBreakdown.REPOSITORY:
         root = Path(str(key)) if key is not None else None
-        name = next((str(row["repository_name"]) for row in rows if row["repository_name"]), None)
+        name = next(
+            (
+                str(session.row["repository_name"])
+                for session in sessions
+                if session.row["repository_name"]
+            ),
+            None,
+        )
         label = name or (root.name if root else "Outside Git repositories")
         return UsageGroup(
             key=str(root) if root else "outside-git",
             label=label,
             repository_root=root,
-            metrics=_metrics(rows, days),
+            metrics=_session_metrics(sessions, days),
         )
-    if breakdown is UsageBreakdown.MODEL:
-        model, provider = cast(tuple[object | None, object | None], key)
-        label = str(model) if model else "Unknown model"
-        return UsageGroup(
-            key=f"{model or 'unknown'}::{provider or 'unknown'}",
-            label=label,
-            model_provider=str(provider) if provider else None,
-            metrics=_metrics(rows, days),
-        )
-    label = period_start.isoformat() if period_start else "Unknown date"
+    model, provider = key if isinstance(key, tuple) else (None, None)
+    label = str(model) if model else "Unknown model"
     return UsageGroup(
-        key=label,
+        key=f"{model or 'unknown'}::{provider or 'unknown'}",
         label=label,
-        period_start=period_start,
-        period_end=period_end,
-        metrics=_metrics(rows, days),
+        model_provider=str(provider) if provider else None,
+        metrics=_session_metrics(sessions, days),
     )
 
 
-def _metrics(rows: list[sqlite3.Row], days: int | None) -> UsageMetrics:
+def _session_metrics(sessions: list[_TemporalSession], days: int | None) -> UsageMetrics:
     values = {
-        field: [int(row[field]) for row in rows if row[field] is not None] for field in TOKEN_FIELDS
+        field: [
+            int(value)
+            for session in sessions
+            if (value := getattr(session.scoped_usage, field)) is not None
+        ]
+        for field in TOKEN_FIELDS
     }
     totals = values["total_tokens"]
     observed_totals = [
-        int(row["observed_total_tokens"])
-        for row in rows
-        if row["observed_total_tokens"] is not None
+        int(session.row["observed_total_tokens"])
+        for session in sessions
+        if session.row["observed_total_tokens"] is not None
     ]
     coverage = UsageCoverage(
-        session_count=len(rows),
+        session_count=len(sessions),
         total_tokens=len(totals),
         input_tokens=len(values["input_tokens"]),
         cached_input_tokens=len(values["cached_input_tokens"]),
@@ -441,7 +487,7 @@ def _metrics(rows: list[sqlite3.Row], days: int | None) -> UsageMetrics:
         reasoning_output_tokens=len(values["reasoning_output_tokens"]),
     )
     return UsageMetrics(
-        session_count=len(rows),
+        session_count=len(sessions),
         total_tokens=_sum_known(totals),
         observed_total_tokens=_sum_known(observed_totals),
         input_tokens=_sum_known(values["input_tokens"]),
@@ -455,21 +501,234 @@ def _metrics(rows: list[sqlite3.Row], days: int | None) -> UsageMetrics:
         p90_tokens_per_session=(
             float(_nearest_rank(observed_totals, 0.90)) if observed_totals else None
         ),
-        sessions_per_day=(len(rows) / days if days else None),
+        sessions_per_day=(len(sessions) / days if days else None),
         coverage=coverage,
     )
 
 
-def _reconciliation(
+@dataclass(slots=True)
+class _PeriodBucket:
+    started_sessions: dict[int, _TemporalSession]
+    contributing_sessions: dict[int, _TemporalSession]
+    contributions: list[UsageVector]
+
+
+def _period_groups(
+    sessions: list[_TemporalSession],
+    breakdown: UsageBreakdown,
+    timezone: tzinfo,
+    scope_start: date | None,
+    scope_end: date | None,
+    *,
+    include_unattributed: bool,
+) -> list[UsageGroup]:
+    buckets: dict[date | None, _PeriodBucket] = {}
+
+    def bucket(key: date | None) -> _PeriodBucket:
+        return buckets.setdefault(key, _PeriodBucket({}, {}, []))
+
+    for session in sessions:
+        session_id = int(session.row["id"])
+        started = _stored_datetime(session.row["started_at"])
+        if started is not None:
+            start_key = _period_key(started, breakdown, timezone)
+            bucket(start_key).started_sessions[session_id] = session
+        for contribution in session.contributions:
+            if contribution.occurred_at is None:
+                if include_unattributed:
+                    current = bucket(None)
+                else:
+                    continue
+            else:
+                current = bucket(_period_key(contribution.occurred_at, breakdown, timezone))
+            current.contributing_sessions[session_id] = session
+            current.contributions.append(contribution.usage)
+
+    results: list[UsageGroup] = []
+    for key, current in buckets.items():
+        period_start, period_end = _period_dates(key, breakdown)
+        days = _group_days(breakdown, period_start, period_end, scope_start, scope_end)
+        label = period_start.isoformat() if period_start else "Unattributed time"
+        results.append(
+            UsageGroup(
+                key=label,
+                label=label,
+                period_start=period_start,
+                period_end=period_end,
+                metrics=_period_metrics(current, days),
+            )
+        )
+    return results
+
+
+def _period_metrics(bucket: _PeriodBucket, days: int | None) -> UsageMetrics:
+    usage = sum_vectors(bucket.contributions)
+    started = list(bucket.started_sessions.values())
+    observed = [
+        int(session.row["observed_total_tokens"])
+        for session in started
+        if session.row["observed_total_tokens"] is not None
+    ]
+    coverage_values = {
+        field: sum(
+            getattr(session.scoped_usage, field) is not None
+            for session in bucket.contributing_sessions.values()
+        )
+        for field in TOKEN_FIELDS
+    }
+    return UsageMetrics(
+        session_count=len(started),
+        total_tokens=usage.total_tokens,
+        observed_total_tokens=_sum_known(observed),
+        input_tokens=usage.input_tokens,
+        cached_input_tokens=usage.cached_input_tokens,
+        output_tokens=usage.output_tokens,
+        reasoning_output_tokens=usage.reasoning_output_tokens,
+        mean_tokens_per_session=fmean(observed) if observed else None,
+        median_tokens_per_session=float(median(observed)) if observed else None,
+        p90_tokens_per_session=float(_nearest_rank(observed, 0.90)) if observed else None,
+        sessions_per_day=len(started) / days if days else None,
+        coverage=UsageCoverage(
+            session_count=len(started),
+            total_tokens=coverage_values["total_tokens"],
+            input_tokens=coverage_values["input_tokens"],
+            cached_input_tokens=coverage_values["cached_input_tokens"],
+            output_tokens=coverage_values["output_tokens"],
+            reasoning_output_tokens=coverage_values["reasoning_output_tokens"],
+        ),
+    )
+
+
+def _temporal_sessions(
     rows: list[sqlite3.Row],
+    event_rows: list[sqlite3.Row],
+    filters: SessionFilters,
+) -> list[_TemporalSession]:
+    events_by_session: dict[int, list[StoredTokenEvent]] = defaultdict(list)
+    for event in event_rows:
+        events_by_session[int(event["source_session_id"])].append(
+            StoredTokenEvent(
+                source_ordinal=int(event["source_ordinal"]),
+                occurred_at=_stored_datetime(event["occurred_at"]),
+                cumulative=_event_vector(event, "cumulative"),
+                delta=_event_vector(event, "delta"),
+            )
+        )
+
+    sessions: list[_TemporalSession] = []
+    bounded = filters.since is not None or filters.until is not None
+    for row in rows:
+        session_id = int(row["id"])
+        status = str(row["accounting_status"] or "root")
+        attribution = attribute_session_usage(
+            semantics=str(row["usage_semantics"] or "unavailable"),
+            target=_row_vector(row, ""),
+            inherited_baseline=(
+                _row_vector(row, "baseline_")
+                if status in {"inherited_exact", "inherited_prefix"}
+                else None
+            ),
+            events=tuple(events_by_session.get(session_id, ())),
+        )
+        if bounded:
+            contributions = tuple(
+                contribution
+                for contribution in attribution.contributions
+                if contribution.occurred_at is not None
+                and _in_window(contribution.occurred_at, filters)
+            )
+            started = _stored_datetime(row["started_at"])
+            if not contributions and not (
+                started is not None and _in_window(started, filters)
+            ):
+                continue
+        else:
+            contributions = attribution.contributions
+        sessions.append(
+            _TemporalSession(
+                row=row,
+                attribution=attribution,
+                contributions=contributions,
+                scoped_usage=sum_vectors(item.usage for item in contributions),
+            )
+        )
+    return sessions
+
+
+def _event_vector(row: sqlite3.Row, prefix: str) -> UsageVector | None:
+    vector = UsageVector(
+        **{field: row[f"{prefix}_{field}"] for field in VECTOR_FIELDS}
+    )
+    return vector if any(getattr(vector, field) is not None for field in VECTOR_FIELDS) else None
+
+
+def _row_vector(row: sqlite3.Row, prefix: str) -> UsageVector:
+    return UsageVector(**{field: row[f"{prefix}{field}"] for field in VECTOR_FIELDS})
+
+
+def _in_window(value: datetime, filters: SessionFilters) -> bool:
+    return (filters.since is None or value >= filters.since) and (
+        filters.until is None or value < filters.until
+    )
+
+
+def _period_key(value: datetime, breakdown: UsageBreakdown, timezone: tzinfo) -> date:
+    local_date = value.astimezone(timezone).date()
+    if breakdown is UsageBreakdown.WEEK:
+        return local_date - timedelta(days=local_date.weekday())
+    return local_date
+
+
+def _temporal_coverage(sessions: list[_TemporalSession]) -> UsageTemporalCoverage:
+    statuses = Counter(session.attribution.status for session in sessions)
+    reasons = Counter(
+        session.attribution.reason
+        for session in sessions
+        if session.attribution.reason is not None
+    )
+    attributed = sum_vectors(
+        contribution.usage
+        for session in sessions
+        for contribution in session.contributions
+        if contribution.occurred_at is not None
+    ).total_tokens
+    unattributed = sum_vectors(
+        session.attribution.unattributed_usage for session in sessions
+    ).total_tokens
+    has_known_tokens = any(
+        session.row["total_tokens"] is not None for session in sessions
+    )
+    if has_known_tokens:
+        attributed = attributed or 0
+        unattributed = unattributed or 0
+    denominator = (attributed or 0) + (unattributed or 0)
+    return UsageTemporalCoverage(
+        complete_sessions=statuses["complete"],
+        partial_sessions=statuses["partial"],
+        fallback_sessions=statuses["fallback"],
+        unavailable_sessions=statuses["unavailable"],
+        attributed_total_tokens=attributed,
+        unattributed_total_tokens=unattributed,
+        attributed_fraction=(attributed or 0) / denominator if denominator else None,
+        fallback_reasons=tuple(sorted((str(key), value) for key, value in reasons.items())),
+    )
+
+
+def _reconciliation(
+    sessions: list[_TemporalSession],
     orphan_relationships: int,
 ) -> UsageReconciliation:
+    rows = [session.row for session in sessions]
     observed = [
         int(row["observed_total_tokens"])
         for row in rows
         if row["observed_total_tokens"] is not None
     ]
-    reconciled = [int(row["total_tokens"]) for row in rows if row["total_tokens"] is not None]
+    reconciled = [
+        int(session.scoped_usage.total_tokens)
+        for session in sessions
+        if session.scoped_usage.total_tokens is not None
+    ]
     statuses = [str(row["accounting_status"] or "root") for row in rows]
     confident = {"inherited_exact", "inherited_prefix"}
     child_rows = [row for row in rows if str(row["accounting_status"] or "root") != "root"]
@@ -513,16 +772,21 @@ def _reconciliation(
 
 
 def _scope_dates(
-    rows: list[sqlite3.Row],
+    sessions: list[_TemporalSession],
     filters: SessionFilters,
     timezone: tzinfo,
     now: datetime,
 ) -> tuple[date | None, date | None]:
-    dates = [
-        started.astimezone(timezone).date()
-        for row in rows
-        if (started := _stored_datetime(row["started_at"])) is not None
-    ]
+    dates: list[date] = []
+    for session in sessions:
+        started = _stored_datetime(session.row["started_at"])
+        if started is not None:
+            dates.append(started.astimezone(timezone).date())
+        dates.extend(
+            contribution.occurred_at.astimezone(timezone).date()
+            for contribution in session.contributions
+            if contribution.occurred_at is not None
+        )
     start = filters.since.astimezone(timezone).date() if filters.since else min(dates, default=None)
     end: date | None
     if filters.until is not None:

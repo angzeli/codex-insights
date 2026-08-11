@@ -18,6 +18,7 @@ from codex_insights.analytics import (
     UsageGroup,
     UsageMetrics,
     UsageReconciliation,
+    UsageTemporalCoverage,
     get_usage_report,
     parse_time_range,
     resolve_timezone,
@@ -140,6 +141,7 @@ def usage_command(
         report.timezone,
         report.breakdown,
         report.reconciliation,
+        report.temporal_coverage,
     )
 
 
@@ -149,6 +151,7 @@ def _render_usage(
     timezone: str,
     breakdown: UsageBreakdown,
     reconciliation: UsageReconciliation | None,
+    temporal: UsageTemporalCoverage,
 ) -> None:
     coverage = metrics.coverage.total_tokens
     fraction = coverage / metrics.session_count if metrics.session_count else None
@@ -164,6 +167,17 @@ def _render_usage(
         headline += f" ({fraction:.1%})"
     console.print(f"[bold cyan]{headline}[/bold cyan]")
     console.print(f"[dim]Timezone: {timezone}[/dim]")
+    temporal_fraction = (
+        f"{temporal.attributed_fraction:.1%}"
+        if temporal.attributed_fraction is not None
+        else "unknown"
+    )
+    console.print(
+        "[dim]Event-time attribution: "
+        f"{temporal_fraction}; temporally unattributed "
+        f"{_format_compact(temporal.unattributed_total_tokens)}; "
+        f"fallback sessions {temporal.fallback_sessions}.[/dim]"
+    )
 
     summary = Table(show_header=False, box=None, pad_edge=False)
     summary.add_column("Metric", style="bold", no_wrap=True)

@@ -19,6 +19,12 @@ billing, quota, or private accounting algorithms.
 - **Inherited/replayed usage:** an ancestor token baseline that exact vector/order evidence shows is
   physically represented again in a descendant rollout. It is removed once from additive totals;
   partial or merely similar vectors are not treated as inherited.
+- **Event-time token contribution:** a nonnegative difference between successive trustworthy
+  cumulative snapshots after any proven inherited baseline is removed, assigned to the snapshot's
+  UTC timestamp. Delta-only source variants use each normalized delta's timestamp.
+- **Temporally unattributed usage:** reconciled usage whose event time cannot be defended because
+  token events are absent, timestamps are missing/regress, or cumulative values are non-monotonic.
+  It remains in all-time totals but is not guessed into a bounded day/week window.
 - **Logical prompt:** one redacted, bounded, confidently originated user prompt. Descendant replay
   observations do not create additional logical prompts.
 - **Observed event:** one normalized semantic event physically present in a rollout. Physical
@@ -60,13 +66,15 @@ Observed rollout totals are not additive across related threads. They are approp
 session inspection and per-session distributions. Reports therefore label median, mean, and p90 as
 observed while labeling account-wide totals as reconciled.
 
-Repository, model, task, and time attribution uses the contributing session's normalized metadata.
-When a child has an exact inherited baseline, only its child-exclusive contribution is attributed to
-the child's repository, model, and start-time bucket. A parent outside a reporting window does not add
-historical ancestor usage to a child inside the window.
+Repository and model attribution uses the contributing session's normalized metadata. When a child
+has an exact inherited baseline, only its child-exclusive event-time increments are attributed to
+the child's repository and model. A parent outside a reporting window does not add historical
+ancestor usage to a child inside the window. Ambiguous lineage retains observed usage but does not
+subtract a guessed baseline.
 
-Git report periods use commit timestamps; session, usage, outcome, and task periods use session start
-times; tool periods use normalized activity time with session start as a fallback. Reports disclose
+Git report periods use commit timestamps; token usage periods use token-event timestamps; logical
+session counts, outcome, and task periods use session start times; tool periods use normalized
+activity time with session start as a fallback. Reports disclose
 these distinct evidence clocks rather than treating missing timestamps as zero activity.
 
 ## Coverage and ratios

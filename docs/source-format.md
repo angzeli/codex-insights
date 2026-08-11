@@ -182,7 +182,8 @@ Recognized source values are mapped inside the adapter:
   from the stable `codex-local` adapter type;
 - `session_meta` may fill missing working-directory, model/provider, and Codex-version metadata;
 - `total_token_usage` is interpreted as a cumulative session snapshot: the final observed snapshot
-  replaces earlier snapshots and they are never summed;
+  remains the session-level total, while content-free timestamped snapshots are retained solely to
+  derive successive nonnegative temporal increments; cumulative snapshots are never summed;
 - `last_token_usage` is interpreted as a last-turn delta; recognized legacy delta records are
   summed only when the rollout contains no cumulative snapshot, and the result is labelled
   `summed_event_deltas`;
@@ -205,6 +206,12 @@ from their parent. For aggregate accounting, Codex Insights subtracts only an ex
 baseline or an exact multi-vector parent segment. A partial or merely similar total is ambiguous
 and is not subtracted. `last_token_usage` is supporting evidence; a mismatch does not override an
 exact cumulative prefix because local delta telemetry can be incomplete or reset.
+
+For daily and weekly analytics, the same proven inherited baseline is removed before successive
+cumulative vectors are differenced. Each nonnegative increment is assigned to its token record's
+UTC timestamp. Missing timestamps, non-monotonic cumulative vectors, timestamp regressions, or a
+mismatch with the reconciled final vector produce an explicit temporal fallback; no guessed date or
+negative usage is emitted.
 
 The first parse streams the entire referenced rollout because complete per-session totals require
 the final cumulative token record. Subsequent runs skip a rollout when file identity, size,
