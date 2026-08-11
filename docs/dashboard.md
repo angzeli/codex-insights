@@ -25,6 +25,9 @@ tool/command metadata, task taxonomy, outcomes, Git provenance, interesting sess
 quality/methodology sections.
 
 - Additive token totals are reconciled local contributions.
+- The `Session/token activity days` headline counts local day buckets containing at least one
+  selected session start or temporally attributed token contribution; it is not the distinct
+  session-start-day metric shown by `stats`.
 - Daily token bars use nonnegative token-event increments; session bars use logical-session starts.
 - Activity can be ordered by date, sessions, or tokens. Both panels share the exact same row order,
   and fixed label/value columns prevent long formatted token values from shrinking the bar track.

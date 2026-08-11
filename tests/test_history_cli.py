@@ -136,5 +136,21 @@ def test_aggregate_commands_emit_machine_readable_json(
     assert stats.exit_code == 0
     stats_payload = json.loads(stats.stdout)
     assert stats_payload["indexed_sessions"] == 4
+    assert stats_payload["active_days"] == 4
     assert stats_payload["total_known_tokens"] == 150
     assert stats_payload["token_data_fraction"] == 0.5
+
+
+def test_stats_human_output_labels_session_start_active_days(
+    analytics_database: tuple[Path, Path],
+) -> None:
+    database, codex_home = analytics_database
+
+    result = runner.invoke(
+        app,
+        ["stats", "--db", str(database), "--codex-home", str(codex_home)],
+    )
+
+    assert result.exit_code == 0
+    assert "Session-start active days" in result.stdout
+    assert "Active days" not in result.stdout

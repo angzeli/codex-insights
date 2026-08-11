@@ -46,6 +46,7 @@ def test_weekly_report_uses_shared_metrics_and_reconciles_breakdowns(
     assert payload["period"]["start"] == "2026-08-03"
     assert payload["period"]["end"] == "2026-08-09"
     assert payload["overview"]["sessions"] == shared.metrics.session_count == 3
+    assert payload["overview"]["active_days"] == 3
     assert payload["overview"]["reconciled_tokens"] == shared.metrics.total_tokens == 50
     assert sum(
         group["metrics"]["total_tokens"] or 0 for group in payload["repositories"]
@@ -116,8 +117,14 @@ def test_report_formats_are_parseable_offline_and_escape_unsafe_names(
     html_text = render_report(report, ReportFormat.HTML)
 
     assert "## Data quality" in markdown
-    assert json.loads(json_text)["overview"]["sessions"] == 4
+    assert "Session/token activity days" in markdown
+    assert "| Active days |" not in markdown
+    json_payload = json.loads(json_text)
+    assert json_payload["overview"]["sessions"] == 4
+    assert json_payload["overview"]["active_days"] == 3
     assert html_text.startswith("<!doctype html>")
+    assert "Session/token activity days" in html_text
+    assert ">Active days<" not in html_text
     assert "<script" not in html_text.casefold()
     assert "&lt;script&gt;" in html_text
     assert "https://" not in html_text

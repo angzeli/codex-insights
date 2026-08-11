@@ -445,7 +445,7 @@ def _render_stats(stats: StatsSummary) -> None:
     table.add_column("Metric", style="bold cyan", no_wrap=True)
     table.add_column("Value", justify="right")
     table.add_row("Indexed sessions", f"{stats.indexed_sessions:,}")
-    table.add_row("Active days", f"{stats.active_days:,}")
+    table.add_row("Session-start active days", f"{stats.active_days:,}")
     table.add_row("Repositories", f"{stats.repositories:,}")
     table.add_row("First activity", _format_timestamp(stats.first_activity))
     table.add_row("Latest activity", _format_timestamp(stats.latest_activity))

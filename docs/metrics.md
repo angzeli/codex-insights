@@ -8,6 +8,16 @@ billing, quota, or private accounting algorithms.
 
 - **Session:** one normalized Codex source thread/rollout in `source_sessions`. Explicit spawn edges
   connect related sessions without merging them.
+- **Session-start active days:** distinct UTC calendar dates represented by session start timestamps
+  in the indexed population. This is the human-facing `stats` metric; its stable JSON field remains
+  `active_days`.
+- **Token-active days:** distinct local calendar buckets containing temporally attributed
+  reconciled token activity. This is a useful precise concept, but it is not currently exposed as a
+  standalone headline.
+- **Session/token activity days:** distinct local calendar buckets, in the selected
+  report/dashboard timezone, containing at least one selected session start or temporally
+  attributed reconciled token contribution. Reports and dashboards use this label; their stable
+  JSON field remains `active_days`.
 - **Observed rollout tokens:** the final trustworthy cumulative token vector reported by one rollout.
   This remains the session-level value shown by `session` and used for median/p90 distributions.
 - **Reconciled local tokens:** the additive contribution used across sessions. Exact inherited or
@@ -76,6 +86,12 @@ Git report periods use commit timestamps; token usage periods use token-event ti
 session counts, outcome, and task periods use session start times; tool periods use normalized
 activity time with session start as a fallback. Reports disclose
 these distinct evidence clocks rather than treating missing timestamps as zero activity.
+
+Session-start active days, token-active days, and session/token activity days can legitimately
+differ. A session may resume and emit token activity on a later date, and temporally unattributed
+usage contributes to neither a token-event day bucket nor a guessed date. `stats` currently uses
+UTC session-start dates, while report and dashboard session/token activity days use the explicitly
+selected rendering timezone.
 
 ## Coverage and ratios
 

@@ -38,6 +38,11 @@ Successive cumulative snapshots become nonnegative increments after proven linea
 removed. Missing or inconsistent event time remains explicit in temporal coverage and is not
 assigned to a guessed reporting day.
 
+The human-facing `Session/token activity days` value counts local day buckets containing at least
+one selected session start or temporally attributed token contribution. The stable `active_days`
+field in `codex-insights-report-v1` has the same meaning; it is intentionally distinct from the
+session-start-day value shown by `stats`.
+
 The data-quality section reports token coverage, event-time attribution and fallback coverage,
 child-thread and reconciliation coverage, ambiguous
 lineage, originated tool-event coverage, prompt-feature coverage, HIGH-confidence Git attribution,

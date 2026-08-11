@@ -42,7 +42,7 @@ def render_markdown(report: AnalyticsReport) -> str:
             ("Metric", "Value"),
             (
                 ("Sessions", _number(overview["sessions"])),
-                ("Active days", _number(overview["active_days"])),
+                ("Session/token activity days", _number(overview["active_days"])),
                 ("Repositories", _number(overview["repositories"])),
                 ("Models", _number(overview["models"])),
                 ("Reconciled known tokens", _number(overview["reconciled_tokens"])),
@@ -378,7 +378,7 @@ def _comparison_markdown(value: object) -> str:
         ("Metric", "Current", "Previous", "Change", "% change"),
         tuple(
             (
-                _short(key),
+                "Session/token activity days" if key == "active_days" else _short(key),
                 _number(_mapping(item).get("current")),
                 _number(_mapping(item).get("previous")),
                 _signed(_mapping(item).get("change")),
@@ -405,7 +405,7 @@ def _markdown_table(headers: tuple[str, ...], rows: tuple[tuple[str, ...], ...])
 def _overview_cards(overview: dict[str, object]) -> str:
     values = (
         ("Sessions", overview.get("sessions")),
-        ("Active days", overview.get("active_days")),
+        ("Session/token activity days", overview.get("active_days")),
         ("Repositories", overview.get("repositories")),
         ("Reconciled tokens", overview.get("reconciled_tokens")),
         ("Observed median/session", overview.get("observed_median_tokens_per_session")),

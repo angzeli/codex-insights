@@ -179,7 +179,7 @@ def _primary_metrics(overview: Mapping[str, object]) -> str:
     coverage = _mapping(overview.get("token_coverage"))
     rows = (
         ("Indexed sessions", _integer(overview.get("sessions"))),
-        ("Active days", _integer(overview.get("active_days"))),
+        ("Session/token activity days", _integer(overview.get("active_days"))),
         ("Repositories", _integer(overview.get("repositories"))),
         ("Reconciled tokens", _number(overview.get("reconciled_tokens"))),
         ("Token coverage", _fraction(coverage.get("fraction"))),

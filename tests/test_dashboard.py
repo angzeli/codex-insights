@@ -65,6 +65,7 @@ def test_dashboard_uses_shared_metrics_and_reconciles_filtered_breakdowns(
     payload = dashboard.to_dict()
 
     assert payload["overview"]["sessions"] == shared.metrics.session_count == 1
+    assert payload["overview"]["active_days"] == 2
     assert payload["overview"]["reconciled_tokens"] == shared.metrics.total_tokens == 50
     assert sum(
         group["metrics"]["total_tokens"] or 0 for group in payload["repositories"]
@@ -110,6 +111,8 @@ def test_dashboard_html_is_offline_content_free_and_escapes_hostile_metadata(
     assert "command text" in rendered.casefold()  # methodology only, never a stored command
     assert all(label in rendered for label in ("Daily", "Weekly", "Overall"))
     assert all(label in rendered for label in ("Date", "Sessions", "Tokens"))
+    assert rendered.count("Session/token activity days") == 3
+    assert ">Active days<" not in rendered
     assert rendered.count("Sessions started per day") == 3
     assert rendered.count("Reconciled tokens by event day") == 3
     assert "grid-template-columns:minmax(8rem,10rem) minmax(12rem,1fr) 9rem" in rendered
