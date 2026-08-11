@@ -280,3 +280,36 @@ def test_privacy_cli_config_inspect_and_purge_are_content_free(
     combined = configured.stdout + inspected.stdout + purged.stdout
     assert "synthetic-secret" not in combined
     assert "SUM(A1:A2)" not in combined
+
+
+def test_privacy_group_options_apply_to_subcommands(
+    privacy_source_home: Path,
+    tmp_path: Path,
+) -> None:
+    database = tmp_path / "index.sqlite3"
+    config = tmp_path / "config.json"
+    index_source(
+        CodexLocalAdapter(resolve_codex_home(privacy_source_home)),
+        database,
+        codex_home=privacy_source_home,
+    )
+
+    inspected = runner.invoke(
+        app,
+        [
+            "privacy",
+            "--db",
+            str(database),
+            "--config",
+            str(config),
+            "--codex-home",
+            str(privacy_source_home),
+            "--json",
+            "inspect",
+        ],
+    )
+
+    assert inspected.exit_code == 0
+    payload = json.loads(inspected.stdout)
+    assert payload["database_path"] == str(database)
+    assert payload["config_path"] == str(config)

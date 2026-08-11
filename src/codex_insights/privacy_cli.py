@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
 from typing import Annotated
@@ -56,6 +57,14 @@ class Toggle(StrEnum):
         return self is Toggle.ON
 
 
+@dataclass(frozen=True, slots=True)
+class _PrivacyGroupOptions:
+    database: Path | None = None
+    codex_home: Path | None = None
+    config: Path | None = None
+    json_output: bool = False
+
+
 def register_privacy_commands(app: typer.Typer) -> None:
     """Attach privacy controls and derived-data operations to the main CLI."""
 
@@ -77,6 +86,12 @@ def privacy_overview(
     """Explain local derived storage and the active future-retention policy."""
 
     if ctx.invoked_subcommand is not None:
+        ctx.obj = _PrivacyGroupOptions(
+            database=database,
+            codex_home=codex_home,
+            config=config,
+            json_output=json_output,
+        )
         return
     source_home = resolve_codex_home(codex_home).path
     try:
@@ -133,6 +148,7 @@ def privacy_overview(
 
 @privacy_app.command("inspect")
 def privacy_inspect_command(
+    ctx: typer.Context,
     database: Annotated[Path | None, typer.Option("--db", dir_okay=False)] = None,
     codex_home: Annotated[
         Path | None,
@@ -143,6 +159,11 @@ def privacy_inspect_command(
 ) -> None:
     """Report retained content categories and counts without sensitive values."""
 
+    shared = _privacy_group_options(ctx)
+    database = database if database is not None else shared.database
+    codex_home = codex_home if codex_home is not None else shared.codex_home
+    config = config if config is not None else shared.config
+    json_output = json_output or shared.json_output
     source_home = resolve_codex_home(codex_home).path
     try:
         inspection = inspect_privacy(
@@ -179,6 +200,7 @@ def privacy_inspect_command(
 
 @privacy_app.command("config")
 def privacy_config_command(
+    ctx: typer.Context,
     store_prompts: Annotated[Toggle | None, typer.Option("--store-prompts")] = None,
     store_command_text: Annotated[
         Toggle | None,
@@ -193,6 +215,10 @@ def privacy_config_command(
 ) -> None:
     """Show or change persistent policy for text stored by future indexing."""
 
+    shared = _privacy_group_options(ctx)
+    codex_home = codex_home if codex_home is not None else shared.codex_home
+    config = config if config is not None else shared.config
+    json_output = json_output or shared.json_output
     source_home = resolve_codex_home(codex_home).path
     try:
         current = load_retention_policy(config, codex_home=source_home)
@@ -234,6 +260,7 @@ def privacy_config_command(
 
 @privacy_app.command("purge")
 def privacy_purge_command(
+    ctx: typer.Context,
     target: PurgeTarget,
     database: Annotated[Path | None, typer.Option("--db", dir_okay=False)] = None,
     codex_home: Annotated[
@@ -245,6 +272,10 @@ def privacy_purge_command(
 ) -> None:
     """Purge selected text from the derived DB while preserving analytic metadata."""
 
+    shared = _privacy_group_options(ctx)
+    database = database if database is not None else shared.database
+    codex_home = codex_home if codex_home is not None else shared.codex_home
+    json_output = json_output or shared.json_output
     source_home = resolve_codex_home(codex_home).path
     database_path = resolve_index_path(database)
     if not yes:
@@ -267,6 +298,10 @@ def privacy_purge_command(
         console.print(
             f"Purged {result.affected_items:,} {target.value} item(s) from {result.database_path}."
         )
+
+
+def _privacy_group_options(ctx: typer.Context) -> _PrivacyGroupOptions:
+    return ctx.obj if isinstance(ctx.obj, _PrivacyGroupOptions) else _PrivacyGroupOptions()
 
 
 def export_command(
