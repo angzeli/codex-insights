@@ -29,8 +29,8 @@ unnecessary FTS rebuilding, and unbounded dashboard serialization.
 
 `scripts/benchmark.py` records corpus parameters, Python and operating-system family, application
 and DB schema versions, fresh index time, unchanged re-index time, one-session changed update,
-common query latency, report/dashboard generation, peak process memory where supported, derived DB
-size, and report/dashboard sizes. It emits a human summary plus stable
+common query and prompt-search latency, report/dashboard generation, peak process memory where
+supported, derived DB size, and report/dashboard sizes. It emits a human summary plus stable
 `codex-insights-benchmark-v1` JSON.
 
 Non-binding engineering expectations are structural rather than hardware-specific:

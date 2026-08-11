@@ -31,6 +31,7 @@ def test_small_benchmark_exercises_fresh_unchanged_and_changed_paths(
     assert timings["changed_session_index"] > 0
     assert timings["report_generation"] > 0
     assert timings["dashboard_generation"] > 0
+    assert timings["queries"]["prompt_search"] > 0
     assert artifacts["database_bytes"] > 0
     assert artifacts["dashboard_html_bytes"] < 500_000
     assert "fresh index" in render_summary(result)

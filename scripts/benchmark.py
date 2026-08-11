@@ -17,6 +17,7 @@ from typing import Any, TypeVar
 from codex_insights import __version__
 from codex_insights.adapters import CodexLocalAdapter
 from codex_insights.analytics.dashboard import build_dashboard_data
+from codex_insights.analytics.prompts import PromptFilters, search_prompts
 from codex_insights.analytics.queries import SessionFilters, get_stats
 from codex_insights.analytics.reports import ReportKind, build_analytics_report
 from codex_insights.analytics.tasks import TaskBreakdown, get_task_report
@@ -127,6 +128,14 @@ def run_benchmark(config: BenchmarkConfig, *, workspace: Path) -> dict[str, obje
             database,
             codex_home=corpus.codex_home,
             filters=ToolFilters(limit=25),
+        )
+    )[0]
+    query_seconds["prompt_search"] = _measure(
+        lambda: search_prompts(
+            database,
+            codex_home=corpus.codex_home,
+            query="synthetic",
+            filters=PromptFilters(limit=25),
         )
     )[0]
 
