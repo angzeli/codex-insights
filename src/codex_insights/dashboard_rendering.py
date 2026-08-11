@@ -58,17 +58,32 @@ font:650 25px/1 system-ui,sans-serif; letter-spacing:-.03em; overflow-wrap:anywh
 .secondary strong {{ color:var(--ink) }} section {{ margin-top:46px }} .section-head {{ display:flex;
 justify-content:space-between; gap:18px; align-items:baseline; border-bottom:1px solid var(--line);
 padding-bottom:9px; margin-bottom:16px }} .section-head h2 {{ margin:0 }}
+.control-input {{ position:absolute; opacity:0; pointer-events:none }} .controls {{ display:flex;
+flex-wrap:wrap; gap:6px; margin:20px 0 12px }} .control-label {{ cursor:pointer; border:1px solid
+var(--line); background:var(--panel2); color:var(--muted); padding:6px 10px }}
+.overview-view,.activity-order {{ display:none }} #overview-daily:checked ~ .overview-views .view-daily,
+#overview-weekly:checked ~ .overview-views .view-weekly,
+#overview-overall:checked ~ .overview-views .view-overall,
+#sort-date:checked ~ .activity-orders .sort-date,
+#sort-sessions:checked ~ .activity-orders .sort-sessions,
+#sort-tokens:checked ~ .activity-orders .sort-tokens {{ display:block }}
+#overview-daily:checked ~ .controls label[for="overview-daily"],
+#overview-weekly:checked ~ .controls label[for="overview-weekly"],
+#overview-overall:checked ~ .controls label[for="overview-overall"],
+#sort-date:checked ~ .controls label[for="sort-date"],
+#sort-sessions:checked ~ .controls label[for="sort-sessions"],
+#sort-tokens:checked ~ .controls label[for="sort-tokens"] {{ color:var(--ink); border-color:var(--accent) }}
 .grid-2 {{ display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:26px }}
 .panel {{ background:var(--panel); border:1px solid var(--line); padding:16px; overflow:auto }}
 table {{ width:100%; border-collapse:collapse }} th,td {{ padding:9px 10px; text-align:left;
 border-bottom:1px solid var(--line); vertical-align:top }} th {{ color:var(--muted);
 font-size:10px; letter-spacing:.07em; text-transform:uppercase; white-space:nowrap }}
 tbody tr:last-child td {{ border-bottom:0 }} td.num,th.num {{ text-align:right }}
-.bar-row {{ display:grid; grid-template-columns:minmax(100px,180px) 1fr auto; gap:10px;
+.bar-row {{ display:grid; grid-template-columns:minmax(8rem,10rem) minmax(12rem,1fr) 9rem; gap:10px;
 align-items:center; margin:8px 0 }} .bar-label {{ overflow:hidden; text-overflow:ellipsis;
 white-space:nowrap }} .track {{ height:8px; background:var(--line); overflow:hidden }}
 .bar {{ height:100%; min-width:1px; background:var(--accent) }} .bar.alt {{ background:var(--accent2) }}
-.bar-value {{ color:var(--muted); text-align:right }} .quality {{ display:grid;
+.bar-value {{ color:var(--muted); text-align:right; width:9rem; white-space:nowrap }} .quality {{ display:grid;
 grid-template-columns:repeat(3,minmax(0,1fr)); gap:1px; background:var(--line);
 border:1px solid var(--line) }} .quality-item {{ background:var(--panel); padding:14px }}
 .quality-item dt {{ color:var(--muted); font-size:11px }} .quality-item dd {{ margin:6px 0 0;
@@ -78,7 +93,8 @@ border:1px solid var(--line); color:var(--muted); white-space:nowrap }}
 @media(max-width:900px) {{ .primary {{ grid-template-columns:repeat(2,1fr) }} .metric {{ border-bottom:1px
 solid var(--line) }} .grid-2,.quality {{ grid-template-columns:1fr }} header {{ grid-template-columns:1fr }}
 .stamp {{ text-align:left }} }} @media(max-width:560px) {{ main {{ padding:24px 14px 48px }}
-.primary {{ grid-template-columns:1fr }} .metric {{ border-right:0 }} .bar-row {{ grid-template-columns:1fr }} }}
+.primary {{ grid-template-columns:1fr }} .metric {{ border-right:0 }} .bar-row {{
+grid-template-columns:7.5rem minmax(7rem,1fr) 7.5rem }} .bar-value {{ width:7.5rem }} }}
 @media print {{ :root {{ color-scheme:light; --bg:#fff; --panel:#fff; --panel2:#fff; --ink:#111;
 --muted:#555; --line:#ccc }} main {{ max-width:none; padding:0 }} section {{ break-inside:avoid }} }}
 </style>
@@ -90,8 +106,7 @@ solid var(--line) }} .grid-2,.quality {{ grid-template-columns:1fr }} header {{ 
 <div class="stamp">dashboard { _escape(payload['schema_version']) }<br>
 version {_escape(payload['application_version'])}<br>{_escape(payload['generated_at'])}<br>
 timezone {_escape(payload['timezone'])}</div></header>
-<div class="primary">{_primary_metrics(overview)}</div>
-<div class="secondary">{_secondary_metrics(overview, quality)}</div>
+{_overview_section(_mapping(payload['overview_views']), overview, quality)}
 {_activity_section(_sequence(payload['activity']))}
 {_repository_section(_sequence(payload['repositories']))}
 {_model_section(_sequence(payload['models']))}
@@ -102,8 +117,9 @@ timezone {_escape(payload['timezone'])}</div></header>
 {_interesting_section(_sequence(payload['interesting_sessions']))}
 {_quality_section(quality)}
 <section><div class="section-head"><h2>Methodology</h2></div><p class="method">
-Additive totals use reconciled local token contributions. Session medians and p90 values use
-observed per-rollout cumulative totals. Prompt, command, task, Git, and outcome metrics preserve
+Additive totals use reconciled local token contributions. Daily and weekly token activity assigns
+nonnegative cumulative increments to token-event time; unprovable timing remains explicit. Session
+medians and p90 values use observed per-rollout cumulative totals. Prompt, command, task, Git, and outcome metrics preserve
 origin and confidence; missing or ambiguous evidence remains explicit. This document contains no
 rollout transcript, prompt body, command text, tool output, hidden reasoning, remote asset,
 analytics beacon, or tracking code. Local token telemetry is not guaranteed to equal server-side
@@ -127,6 +143,36 @@ def _filter_chips(filters: Mapping[str, object]) -> str:
         if value is not None
     ]
     return "".join(active) if active else '<span class="filter">all indexed activity</span>'
+
+
+def _overview_section(
+    views: Mapping[str, object],
+    overall: Mapping[str, object],
+    quality: Mapping[str, object],
+) -> str:
+    rendered_views = "".join(
+        f'<div class="overview-view view-{_escape(key)}">'
+        f'<div class="muted">{_escape(_mapping(value).get("label"))}</div>'
+        f'<div class="primary">{_primary_metrics(_mapping(value))}</div></div>'
+        for key, value in (("daily", views.get("daily")), ("weekly", views.get("weekly")), ("overall", views.get("overall")))
+    )
+    compact = "".join(
+        f'<span>{_escape(label)} <strong>{_escape(_number(_mapping(views.get(key)).get("reconciled_tokens")))}</strong></span>'
+        for key, label in (("daily", "Today"), ("weekly", "This week"), ("overall", "All time"))
+    )
+    return (
+        '<div class="overview-switch">'
+        '<input class="control-input" type="radio" name="overview" id="overview-daily">'
+        '<input class="control-input" type="radio" name="overview" id="overview-weekly">'
+        '<input class="control-input" type="radio" name="overview" id="overview-overall" checked>'
+        '<div class="controls" aria-label="Overview period">'
+        '<label class="control-label" for="overview-daily">Daily</label>'
+        '<label class="control-label" for="overview-weekly">Weekly</label>'
+        '<label class="control-label" for="overview-overall">Overall</label></div>'
+        f'<div class="overview-views">{rendered_views}</div>'
+        f'<div class="secondary">{compact}</div>'
+        f'<div class="secondary">{_secondary_metrics(overall, quality)}</div></div>'
+    )
 
 
 def _primary_metrics(overview: Mapping[str, object]) -> str:
@@ -165,8 +211,36 @@ def _secondary_metrics(
 
 
 def _activity_section(rows: list[dict[str, object]]) -> str:
-    sessions = [(_label(row), _integer_value(_nested(row, "metrics", "session_count"))) for row in rows]
-    tokens = [(_label(row), _integer_value(_nested(row, "metrics", "total_tokens"))) for row in rows]
+    views = "".join(
+        f'<div class="activity-order sort-{criterion}">{_activity_order(rows, criterion)}</div>'
+        for criterion in ("date", "sessions", "tokens")
+    )
+    return _section(
+        "Activity",
+        "Tokens use event time; sessions use logical-session start time.",
+        '<div class="activity-sort">'
+        '<input class="control-input" type="radio" name="activity-sort" id="sort-date" checked>'
+        '<input class="control-input" type="radio" name="activity-sort" id="sort-sessions">'
+        '<input class="control-input" type="radio" name="activity-sort" id="sort-tokens">'
+        '<div class="controls" aria-label="Activity sort">'
+        '<span class="muted">Sort</span>'
+        '<label class="control-label" for="sort-date">Date</label>'
+        '<label class="control-label" for="sort-sessions">Sessions</label>'
+        '<label class="control-label" for="sort-tokens">Tokens</label></div>'
+        f'<div class="activity-orders">{views}</div></div>',
+    )
+
+
+def _activity_order(rows: list[dict[str, object]], criterion: str) -> str:
+    ordered = sorted(rows, key=lambda row: _activity_sort_key(row, criterion))
+    sessions = [
+        (_label(row), _integer_value(_nested(row, "metrics", "session_count")))
+        for row in ordered
+    ]
+    tokens = [
+        (_label(row), _integer_value(_nested(row, "metrics", "total_tokens")))
+        for row in ordered
+    ]
     table_rows = tuple(
         (
             _label(row),
@@ -174,18 +248,29 @@ def _activity_section(rows: list[dict[str, object]]) -> str:
             _number(_nested(row, "metrics", "total_tokens")),
             _coverage(_nested(row, "metrics", "coverage")),
         )
-        for row in rows
+        for row in ordered
     )
-    return _section(
-        "Activity",
-        "Session frequency and reconciled token burn are shown separately.",
-        '<div class="grid-2"><div class="panel"><h3>Sessions per day</h3>'
+    return (
+        '<div class="grid-2"><div class="panel"><h3>Sessions started per day</h3>'
         + _bar_rows(sessions, alternative=False)
-        + '</div><div class="panel"><h3>Reconciled tokens per day</h3>'
+        + '</div><div class="panel"><h3>Reconciled tokens by event day</h3>'
         + _bar_rows(tokens, alternative=True)
         + "</div></div>"
-        + _table(("Day", "Sessions", "Reconciled tokens", "Coverage"), table_rows),
+        + _table(("Day", "Sessions", "Reconciled tokens", "Coverage"), table_rows)
     )
+
+
+def _activity_sort_key(row: Mapping[str, object], criterion: str) -> tuple[object, ...]:
+    label = _label(row)
+    date_key = (label == "Unattributed time", label)
+    sessions = _integer_value(_nested(row, "metrics", "session_count"))
+    token_value = _nested(row, "metrics", "total_tokens")
+    tokens = _integer_value(token_value)
+    if criterion == "sessions":
+        return (-sessions, *date_key)
+    if criterion == "tokens":
+        return (token_value is None, -tokens, *date_key)
+    return date_key
 
 
 def _repository_section(rows: list[dict[str, object]]) -> str:
@@ -359,8 +444,12 @@ def _quality_section(quality: Mapping[str, object]) -> str:
     warnings = _mapping(compatibility.get("warnings"))
     event = _mapping(quality.get("event_provenance"))
     token_coverage = _mapping(quality.get("token_coverage"))
+    temporal = _mapping(quality.get("temporal_attribution"))
     items = (
         ("Token coverage", _fraction(token_coverage.get("fraction"))),
+        ("Event-time attribution", _fraction(temporal.get("attributed_fraction"))),
+        ("Temporally unattributed tokens", _number(temporal.get("unattributed_total_tokens"))),
+        ("Temporal fallback sessions", _integer(temporal.get("fallback_sessions"))),
         ("Replayed tokens removed", _number(quality.get("reconciled_replay_tokens"))),
         ("Child reconciliation", _fraction(quality.get("child_reconciliation_coverage"))),
         ("Ambiguous lineage threads", _integer(quality.get("ambiguous_lineage_threads"))),

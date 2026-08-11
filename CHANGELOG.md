@@ -2,6 +2,15 @@
 
 All notable changes to Codex Insights are documented here.
 
+## Unreleased
+
+- attribute daily and weekly token activity from nonnegative token-event increments instead of
+  assigning a resumed rollout's full cumulative lifetime total to its start date;
+- retain content-free token-event timestamps/vectors in derived schema 16 with explicit temporal
+  fallback and unattributed coverage;
+- add Dashboard Daily/Weekly/Overall overview controls, synchronized activity sorting by date,
+  sessions, or tokens, and fixed bar-track geometry for long numeric labels.
+
 ## 1.0.0 - 2026-08-10
 
 ### Normalized analytics

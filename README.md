@@ -182,14 +182,17 @@ evidence model can attribute to that thread:
 - a session detail shows its observed final cumulative rollout usage;
 - additive totals use reconciled local contributions, subtracting only exact inherited/replayed
   ancestor baselines;
+- daily and weekly token totals use nonnegative cumulative increments at token-event time, so one
+  resumed logical session can contribute on multiple dates without changing its all-time total;
 - mean, median, and p90 tokens/session describe observed per-rollout values;
 - prompts and tool/command totals use origin-aware logical/originated events;
 - Git associations retain HIGH, MEDIUM, LOW, and ambiguous evidence separately;
 - outcomes and tasks are deterministic, versioned heuristics with UNKNOWN retained.
 
 Ambiguous lineage is not guessed away. Missing values remain unknown, coverage denominators are
-shown, and child-exclusive contributions stay attributed to the child's repository, model, and
-start-time bucket. Local Codex token telemetry is not guaranteed to equal OpenAI server-side quota,
+shown, and child-exclusive contributions stay attributed to the child's repository and model at
+token-event time. Missing or inconsistent event timing is reported as temporally unattributed, not
+silently assigned to the session start date. Local Codex token telemetry is not guaranteed to equal OpenAI server-side quota,
 billing, or UI accounting. Full definitions are frozen in [metrics](docs/metrics.md).
 
 ## Architecture

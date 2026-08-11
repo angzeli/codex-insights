@@ -20,11 +20,14 @@ indexed values.
 
 ## Sections and semantics
 
-The dashboard contains overview, daily activity, repository and model activity, originated
+The dashboard contains switchable Daily/Weekly/Overall overview cards, daily activity, repository and model activity, originated
 tool/command metadata, task taxonomy, outcomes, Git provenance, interesting sessions, and data
 quality/methodology sections.
 
 - Additive token totals are reconciled local contributions.
+- Daily token bars use nonnegative token-event increments; session bars use logical-session starts.
+- Activity can be ordered by date, sessions, or tokens. Both panels share the exact same row order,
+  and fixed label/value columns prevent long formatted token values from shrinking the bar track.
 - Median and p90 values are observed per-rollout cumulative totals.
 - Prompt counts are logical and origin-aware.
 - Tool and command counts include originated observations only.
@@ -34,7 +37,8 @@ quality/methodology sections.
 
 The dashboard uses the same analytics functions as `usage`, `tasks`, `tools`, `commits`, `outcomes`,
 and periodic reports. Repository/model token breakdowns therefore reconcile with the selected
-headline total where attribution is complete.
+headline total where attribution is complete. Data quality reports event-time attribution coverage,
+fallback sessions, and temporally unattributed tokens.
 
 ## Privacy and security
 

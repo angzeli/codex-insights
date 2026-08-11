@@ -108,6 +108,12 @@ def test_dashboard_html_is_offline_content_free_and_escapes_hostile_metadata(
     assert "中文專案" in rendered
     assert "synthetic-secret-value" not in rendered
     assert "command text" in rendered.casefold()  # methodology only, never a stored command
+    assert all(label in rendered for label in ("Daily", "Weekly", "Overall"))
+    assert all(label in rendered for label in ("Date", "Sessions", "Tokens"))
+    assert rendered.count("Sessions started per day") == 3
+    assert rendered.count("Reconciled tokens by event day") == 3
+    assert "grid-template-columns:minmax(8rem,10rem) minmax(12rem,1fr) 9rem" in rendered
+    assert "width:9rem" in rendered
 
 
 def test_empty_dashboard_and_cli_write_guards(tmp_path: Path) -> None:

@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections import Counter
 from contextlib import closing
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, time, timedelta
 from pathlib import Path
 
 from codex_insights import __version__
@@ -69,7 +69,9 @@ class DashboardData:
     timezone: str
     filters: DashboardFilters
     overview: dict[str, object]
+    overview_views: dict[str, dict[str, object]]
     activity: tuple[dict[str, object], ...]
+    weekly_activity: tuple[dict[str, object], ...]
     repositories: tuple[dict[str, object], ...]
     models: tuple[dict[str, object], ...]
     task_actions: dict[str, object]
@@ -88,7 +90,9 @@ class DashboardData:
             "timezone": self.timezone,
             "filters": self.filters.to_dict(),
             "overview": self.overview,
+            "overview_views": self.overview_views,
             "activity": list(self.activity),
+            "weekly_activity": list(self.weekly_activity),
             "repositories": list(self.repositories),
             "models": list(self.models),
             "tasks": {"actions": self.task_actions, "domains": self.task_domains},
@@ -179,6 +183,13 @@ def build_dashboard_data(
         codex_home=codex_home,
         filters=session_filters,
         breakdown=UsageBreakdown.DAY,
+        timezone=timezone,
+    )
+    week_usage = get_usage_report(
+        database_path,
+        codex_home=codex_home,
+        filters=session_filters,
+        breakdown=UsageBreakdown.WEEK,
         timezone=timezone,
     )
     repository_usage = get_usage_report(
@@ -287,7 +298,7 @@ def build_dashboard_data(
     compatibility = _compatibility_summary(database_path, codex_home=codex_home)
     overview: dict[str, object] = {
         "sessions": session_count,
-        "active_days": len(day_usage.groups),
+        "active_days": sum(group.period_start is not None for group in day_usage.groups),
         "repositories": len(repository_usage.groups),
         "models": len(model_usage.groups),
         "reconciled_tokens": usage.metrics.total_tokens,
@@ -305,6 +316,32 @@ def build_dashboard_data(
             if outcomes.session_count
             else None
         ),
+    }
+    today_start, tomorrow_start, week_start = _local_window_bounds(
+        generated_at, timezone
+    )
+    daily_overview = _window_overview(
+        database_path,
+        codex_home=codex_home,
+        timezone=timezone,
+        selected=selected,
+        since=today_start,
+        until=tomorrow_start,
+        label="Today",
+    )
+    weekly_overview = _window_overview(
+        database_path,
+        codex_home=codex_home,
+        timezone=timezone,
+        selected=selected,
+        since=week_start,
+        until=tomorrow_start,
+        label="This week",
+    )
+    overview_views = {
+        "daily": daily_overview,
+        "weekly": weekly_overview,
+        "overall": {**overview, "label": "All time / selected range"},
     }
     tools_payload: dict[str, object] = {
         "originated_tool_calls": tools.originated_tool_calls,
@@ -363,6 +400,7 @@ def build_dashboard_data(
             reconciliation.ambiguous_children + reconciliation.cyclic_children
         ),
         "ambiguous_lineage_observed_tokens": reconciliation.ambiguous_observed_tokens,
+        "temporal_attribution": usage.temporal_coverage.to_dict(),
         "event_provenance": tools.provenance.to_dict(),
         "logical_prompts": task_summary.metrics.logical_prompts,
         "prompt_feature_sessions": task_summary.metrics.sessions_with_prompt_features,
@@ -384,7 +422,9 @@ def build_dashboard_data(
         timezone=timezone.label,
         filters=selected,
         overview=overview,
+        overview_views=overview_views,
         activity=tuple(group.to_dict() for group in day_usage.groups),
+        weekly_activity=tuple(group.to_dict() for group in week_usage.groups),
         repositories=repositories,
         models=models,
         task_actions=task_actions.to_dict(),
@@ -518,6 +558,77 @@ def _compatibility_summary(database_path: Path, *, codex_home: Path) -> dict[str
         "warnings": {str(row["severity"]): int(row["warning_count"]) for row in warning_rows},
         "stale_sessions": stale,
         "unknown_source_records": unknown_records,
+    }
+
+
+def _local_window_bounds(
+    reference: datetime,
+    timezone: TimezoneSpec,
+) -> tuple[datetime, datetime, datetime]:
+    local = reference.astimezone(timezone.timezone)
+    today_start = datetime.combine(local.date(), time.min, tzinfo=timezone.timezone)
+    tomorrow_start = today_start + timedelta(days=1)
+    week_start = today_start - timedelta(days=local.date().weekday())
+    return _as_utc(today_start), _as_utc(tomorrow_start), _as_utc(week_start)
+
+
+def _window_overview(
+    database_path: Path,
+    *,
+    codex_home: Path,
+    timezone: TimezoneSpec,
+    selected: DashboardFilters,
+    since: datetime,
+    until: datetime,
+    label: str,
+) -> dict[str, object]:
+    window_since = max(value for value in (selected.since, since) if value is not None)
+    window_until = min(value for value in (selected.until, until) if value is not None)
+    filters = SessionFilters(
+        since=window_since,
+        until=window_until,
+        repository=selected.repository,
+        model=selected.model,
+        task_action=selected.task_action,
+        task_domain=selected.task_domain,
+        limit=_QUERY_LIMIT,
+    )
+    reports = {
+        breakdown: get_usage_report(
+            database_path,
+            codex_home=codex_home,
+            filters=filters,
+            breakdown=breakdown,
+            timezone=timezone,
+        )
+        for breakdown in (
+            UsageBreakdown.SUMMARY,
+            UsageBreakdown.DAY,
+            UsageBreakdown.REPOSITORY,
+            UsageBreakdown.MODEL,
+        )
+    }
+    summary = reports[UsageBreakdown.SUMMARY]
+    coverage = summary.metrics.coverage
+    return {
+        "label": label,
+        "sessions": summary.metrics.session_count,
+        "active_days": sum(
+            group.period_start is not None for group in reports[UsageBreakdown.DAY].groups
+        ),
+        "repositories": len(reports[UsageBreakdown.REPOSITORY].groups),
+        "models": len(reports[UsageBreakdown.MODEL].groups),
+        "reconciled_tokens": summary.metrics.total_tokens,
+        "token_coverage": {
+            "sessions_with_data": coverage.total_tokens,
+            "sessions": coverage.session_count,
+            "fraction": (
+                coverage.total_tokens / coverage.session_count
+                if coverage.session_count
+                else None
+            ),
+        },
+        "temporal_attribution": summary.temporal_coverage.to_dict(),
     }
 
 
