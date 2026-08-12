@@ -43,7 +43,7 @@ from codex_insights.models import (
     UsageVector,
 )
 
-PARSER_VERSION = "codex-source-parser-v10"
+PARSER_VERSION = "codex-source-parser-v11"
 SOURCE_SCHEMA_FINGERPRINT_VERSION = "codex-source-schema-v1"
 MAX_ROLLOUT_LINE_BYTES = 1024 * 1024
 MAX_STATE_REFERENCE_CHECKS = 1_000
@@ -153,6 +153,25 @@ _KNOWN_PAYLOAD_FIELDS = {
     "type",
     "usage",
     "version",
+}
+_RECOGNIZED_IGNORED_FIELDS = {
+    "encrypted_content",
+    "input",
+    "memory_citation",
+    "metadata",
+    "phase",
+    "rate_limits",
+    "stderr",
+    "stdout",
+    "summary",
+    "turn_id",
+}
+_RECOGNIZED_IGNORED_PAYLOAD_TYPES = {"turn_aborted"}
+_LIFECYCLE_GAP_TYPES = {
+    "item-completed",
+    "item_completed",
+    "thread-rolled-back",
+    "thread_rolled_back",
 }
 
 
@@ -646,11 +665,41 @@ def _unknown_observations(
             kind=kind,
             name=name,
             count=count,
+            diagnostic_category=_unknown_diagnostic_category(kind, name),
+            capability_impact=_unknown_capability_impact(kind, name),
             first_seen_at=first_seen.get((kind, name)),
             last_seen_at=last_seen.get((kind, name)),
         )
         for (kind, name), count in sorted(counts.items())
     )
+
+
+def _unknown_diagnostic_category(kind: str, name: str) -> str:
+    if kind in {"payload_field", "top_level_field"}:
+        return "recognized_ignored" if name in _RECOGNIZED_IGNORED_FIELDS else "field_passthrough"
+    if kind == "tool_encoding" or (
+        kind == "payload_type"
+        and ("tool" in name or "command-end" in name or "command_end" in name)
+    ):
+        return "tool_result_gap"
+    if kind == "payload_type" and name in _RECOGNIZED_IGNORED_PAYLOAD_TYPES:
+        return "recognized_ignored"
+    if kind == "payload_type" and name in _LIFECYCLE_GAP_TYPES:
+        return "lifecycle_gap"
+    if kind in {"record_type", "payload_type"}:
+        return "semantic_gap"
+    return "unclassified"
+
+
+def _unknown_capability_impact(kind: str, name: str) -> str:
+    category = _unknown_diagnostic_category(kind, name)
+    if category == "tool_result_gap":
+        return "tool_activity"
+    if category == "lifecycle_gap" or name == "turn_aborted":
+        return "task_lifecycle_outcomes"
+    if category == "semantic_gap":
+        return "event_normalization"
+    return "source_compatibility"
 
 
 def _rollout_schema_identity(

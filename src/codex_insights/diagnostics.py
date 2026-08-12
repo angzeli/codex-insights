@@ -54,6 +54,21 @@ class CapabilityCoverageDiagnostic:
 
 
 @dataclass(frozen=True, slots=True)
+class UnknownSourceDiagnostic:
+    """One bounded aggregate source-shape diagnostic without payload values."""
+
+    category: str
+    kind: str
+    name: str
+    occurrences: int
+    affected_sessions: int
+    first_seen_at: str | None
+    last_seen_at: str | None
+    newly_seen: bool
+    capability_impact: str
+
+
+@dataclass(frozen=True, slots=True)
 class DeepDoctorReport:
     """Serializable deep diagnostics containing aggregate metadata only."""
 
@@ -76,6 +91,8 @@ class DeepDoctorReport:
     parse_failure_count: int
     unknown_record_count: int
     unknown_record_categories: int
+    unknown_diagnostic_counts: dict[str, int]
+    unknown_diagnostics: tuple[UnknownSourceDiagnostic, ...]
     unknown_event_rate: float | None
     capability_coverage: tuple[CapabilityCoverageDiagnostic, ...]
     compatibility_warning_count: int
@@ -185,6 +202,8 @@ def run_deep_diagnostics(
         parse_failure_count=int(empty["parse_failures"]),
         unknown_record_count=int(empty["unknown_records"]),
         unknown_record_categories=int(empty["unknown_categories"]),
+        unknown_diagnostic_counts=empty["unknown_diagnostic_counts"],
+        unknown_diagnostics=empty["unknown_diagnostics"],
         unknown_event_rate=empty["unknown_event_rate"],
         capability_coverage=empty["capabilities"],
         compatibility_warning_count=int(empty["compatibility_warnings"]),
@@ -211,6 +230,8 @@ def _empty_database_diagnostics() -> dict[str, Any]:
         "parse_failures": 0,
         "unknown_records": 0,
         "unknown_categories": 0,
+        "unknown_diagnostic_counts": {},
+        "unknown_diagnostics": (),
         "unknown_event_rate": None,
         "compatibility_warnings": 0,
         "capabilities": (),
@@ -262,6 +283,77 @@ def _inspect_derived_database(connection: sqlite3.Connection) -> dict[str, Any]:
         ).fetchone()
         result["unknown_records"] = int(unknown[0])
         result["unknown_categories"] = int(unknown[1])
+        unknown_columns = {
+            str(row[1])
+            for row in connection.execute("PRAGMA table_info(unknown_source_records)")
+        }
+        if "diagnostic_category" not in unknown_columns:
+            result["unknown_diagnostic_counts"] = {
+                "unclassified": int(unknown[0])
+            }
+            return _finish_derived_diagnostics(connection, tables, result)
+        result["unknown_diagnostic_counts"] = {
+            str(row[0]): int(row[1])
+            for row in connection.execute(
+                """
+                SELECT diagnostic_category, COALESCE(SUM(record_count), 0)
+                FROM unknown_source_records
+                GROUP BY diagnostic_category ORDER BY diagnostic_category
+                """
+            )
+        }
+        latest_run = connection.execute(
+            "SELECT MAX(id) FROM index_runs WHERE status = 'completed'"
+        ).fetchone()[0]
+        result["unknown_diagnostics"] = tuple(
+            UnknownSourceDiagnostic(
+                category=str(row["diagnostic_category"]),
+                kind=str(row["unknown_kind"]),
+                name=str(row["unknown_name"]),
+                occurrences=int(row["occurrences"]),
+                affected_sessions=int(row["affected_sessions"]),
+                first_seen_at=(
+                    str(row["first_seen_at"]) if row["first_seen_at"] else None
+                ),
+                last_seen_at=str(row["last_seen_at"]) if row["last_seen_at"] else None,
+                newly_seen=bool(
+                    latest_run is not None
+                    and row["first_index_run_id"] is not None
+                    and int(row["first_index_run_id"]) == int(latest_run)
+                ),
+                capability_impact=str(row["capability_impact"]),
+            )
+            for row in connection.execute(
+                """
+                SELECT diagnostic_category, unknown_kind, unknown_name,
+                       capability_impact, SUM(record_count) AS occurrences,
+                       COUNT(DISTINCT source_session_id) AS affected_sessions,
+                       MIN(first_seen_at) AS first_seen_at,
+                       MAX(last_seen_at) AS last_seen_at,
+                       MIN(first_index_run_id) AS first_index_run_id
+                FROM unknown_source_records
+                GROUP BY diagnostic_category, unknown_kind, unknown_name,
+                         capability_impact
+                ORDER BY CASE diagnostic_category
+                    WHEN 'tool_result_gap' THEN 1
+                    WHEN 'lifecycle_gap' THEN 2
+                    WHEN 'semantic_gap' THEN 3
+                    WHEN 'unclassified' THEN 4
+                    WHEN 'field_passthrough' THEN 5
+                    ELSE 6
+                END, occurrences DESC, unknown_kind, unknown_name
+                LIMIT 25
+                """
+            )
+        )
+    return _finish_derived_diagnostics(connection, tables, result)
+
+
+def _finish_derived_diagnostics(
+    connection: sqlite3.Connection,
+    tables: set[str],
+    result: dict[str, Any],
+) -> dict[str, Any]:
     if "event_summary" in tables:
         event_totals = connection.execute(
             """

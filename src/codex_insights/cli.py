@@ -174,6 +174,27 @@ def _render_deep_doctor(report: DeepDoctorReport) -> None:
     )
     console.print(summary)
 
+    unknowns = Table(title="Top source-format diagnostics")
+    unknowns.add_column("Category")
+    unknowns.add_column("Shape")
+    unknowns.add_column("Count", justify="right")
+    unknowns.add_column("Sessions", justify="right")
+    unknowns.add_column("Capability")
+    unknowns.add_column("New", justify="center")
+    if report.unknown_diagnostics:
+        for item in report.unknown_diagnostics:
+            unknowns.add_row(
+                item.category,
+                f"{item.kind}:{item.name}",
+                f"{item.occurrences:,}",
+                f"{item.affected_sessions:,}",
+                item.capability_impact,
+                "yes" if item.newly_seen else "no",
+            )
+    else:
+        unknowns.add_row("none", "none", "0", "0", "none", "no")
+    console.print(unknowns)
+
     versions = Table(title="Compatibility algorithms")
     versions.add_column("Component")
     versions.add_column("Version")

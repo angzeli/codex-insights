@@ -9,7 +9,7 @@ from pathlib import Path
 
 from codex_insights.path_safety import UnsafeDestinationError, validate_write_target
 
-SCHEMA_VERSION = 18
+SCHEMA_VERSION = 19
 
 _MIGRATION_1 = """
 CREATE TABLE source_sessions (
@@ -857,6 +857,38 @@ CREATE INDEX session_outcomes_strong_idx
     ON session_outcomes(strongly_evidenced, outcome);
 """
 
+_MIGRATION_19 = """
+ALTER TABLE unknown_source_records ADD COLUMN diagnostic_category TEXT NOT NULL
+    DEFAULT 'unclassified' CHECK (diagnostic_category IN (
+        'field_passthrough', 'recognized_ignored', 'semantic_gap',
+        'tool_result_gap', 'lifecycle_gap', 'unclassified'
+    ));
+ALTER TABLE unknown_source_records ADD COLUMN capability_impact TEXT NOT NULL
+    DEFAULT 'source_compatibility';
+ALTER TABLE unknown_source_records ADD COLUMN first_index_run_id INTEGER
+    REFERENCES index_runs(id) ON DELETE SET NULL;
+ALTER TABLE unknown_source_records ADD COLUMN last_index_run_id INTEGER
+    REFERENCES index_runs(id) ON DELETE SET NULL;
+
+UPDATE unknown_source_records
+SET diagnostic_category = CASE
+    WHEN unknown_kind IN ('payload_field', 'top_level_field') THEN 'field_passthrough'
+    WHEN unknown_kind = 'tool_encoding' THEN 'tool_result_gap'
+    WHEN unknown_kind IN ('record_type', 'payload_type') THEN 'semantic_gap'
+    ELSE 'unclassified'
+END,
+capability_impact = CASE
+    WHEN unknown_kind = 'tool_encoding' THEN 'tool_activity'
+    WHEN unknown_kind IN ('record_type', 'payload_type') THEN 'event_normalization'
+    ELSE 'source_compatibility'
+END;
+
+CREATE INDEX unknown_source_records_diagnostic_idx
+    ON unknown_source_records(diagnostic_category, unknown_name);
+CREATE INDEX unknown_source_records_first_run_idx
+    ON unknown_source_records(first_index_run_id);
+"""
+
 _MIGRATIONS = {
     1: _MIGRATION_1,
     2: _MIGRATION_2,
@@ -876,6 +908,7 @@ _MIGRATIONS = {
     16: _MIGRATION_16,
     17: _MIGRATION_17,
     18: _MIGRATION_18,
+    19: _MIGRATION_19,
 }
 
 

@@ -388,6 +388,7 @@ def _index_candidate(
                 session_id=session_id,
                 parsed=parsed,
                 parser_version=adapter.parser_version,
+                run_id=run_id,
             )
             _upsert_session_compatibility_success(
                 connection,
@@ -2461,7 +2462,16 @@ def _replace_unknown_source_records(
     session_id: int,
     parsed: ParsedSourceSession,
     parser_version: str,
+    run_id: int,
 ) -> None:
+    first_runs = {
+        (str(row["unknown_kind"]), str(row["unknown_name"])): row["first_index_run_id"]
+        for row in connection.execute(
+            "SELECT unknown_kind, unknown_name, first_index_run_id "
+            "FROM unknown_source_records WHERE source_session_id = ?",
+            (session_id,),
+        )
+    }
     connection.execute(
         "DELETE FROM unknown_source_records WHERE source_session_id = ?",
         (session_id,),
@@ -2472,8 +2482,9 @@ def _replace_unknown_source_records(
         INSERT INTO unknown_source_records(
             source_session_id, unknown_kind, unknown_name, record_count,
             parser_version, source_schema_fingerprint, first_seen_at,
-            last_seen_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            last_seen_at, diagnostic_category, capability_impact,
+            first_index_run_id, last_index_run_id, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             (
@@ -2485,6 +2496,10 @@ def _replace_unknown_source_records(
                 parsed.source_schema_fingerprint or None,
                 _format_datetime(item.first_seen_at),
                 _format_datetime(item.last_seen_at),
+                item.diagnostic_category,
+                item.capability_impact,
+                first_runs.get((item.kind, item.name)) or run_id,
+                run_id,
                 now,
             )
             for item in parsed.unknown_source_records

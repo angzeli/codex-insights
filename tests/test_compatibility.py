@@ -8,6 +8,7 @@ from codex_insights.adapters import CodexLocalAdapter
 from codex_insights.adapters.base import SourceChangedDuringParseError
 from codex_insights.adapters.codex_index import select_state_database
 from codex_insights.config import resolve_codex_home
+from codex_insights.diagnostics import run_deep_diagnostics
 from codex_insights.indexer import index_source
 from codex_insights.models import CapabilityStatus, SourceCapability
 
@@ -75,15 +76,71 @@ def test_unknown_records_are_counted_without_raw_payload_persistence(tmp_path: P
     with sqlite3.connect(database) as connection:
         rows = connection.execute(
             """
-            SELECT unknown_kind, unknown_name, record_count
+            SELECT unknown_kind, unknown_name, record_count, diagnostic_category,
+                   capability_impact
             FROM unknown_source_records ORDER BY unknown_kind, unknown_name
             """
         ).fetchall()
-    assert ("record_type", "future_record_v2", 1) in rows
-    assert ("payload_type", "future_payload_v2", 1) in rows
+    assert (
+        "record_type",
+        "future_record_v2",
+        1,
+        "semantic_gap",
+        "event_normalization",
+    ) in rows
+    assert (
+        "payload_type",
+        "future_payload_v2",
+        1,
+        "semantic_gap",
+        "event_normalization",
+    ) in rows
     database_bytes = database.read_bytes()
     assert b'"future_field":true' not in database_bytes
     assert b'"future_payload_field":1' not in database_bytes
+
+
+def test_unknown_diagnostic_tiers_preserve_unclassified_visibility(tmp_path: Path) -> None:
+    home = _home_from_version(tmp_path, "version_c")
+    rollout = home / "rollout.jsonl"
+    rollout.write_text(
+        "\n".join(
+            (
+                '{"type":"event_msg","payload":{"type":"turn_aborted",'
+                '"metadata":"PRIVATE-METADATA"}}',
+                '{"type":"event_msg","payload":{"type":"item-completed"}}',
+                '{"type":"event_msg","payload":{"type":"mcp-tool-call-end"}}',
+                '{"type":"future-record","payload":{"type":"future-type"}}',
+            )
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    database = tmp_path / "index.sqlite3"
+    adapter = CodexLocalAdapter(resolve_codex_home(home))
+
+    index_source(adapter, database, codex_home=home)
+
+    with sqlite3.connect(database) as connection:
+        categories = dict(
+            connection.execute(
+                "SELECT unknown_name, diagnostic_category FROM unknown_source_records"
+            )
+        )
+    assert categories["metadata"] == "recognized_ignored"
+    assert categories["turn_aborted"] == "recognized_ignored"
+    assert categories["item-completed"] == "lifecycle_gap"
+    assert categories["mcp-tool-call-end"] == "tool_result_gap"
+    assert categories["future-record"] == "semantic_gap"
+    assert b"PRIVATE-METADATA" not in database.read_bytes()
+
+    first_diagnostics = run_deep_diagnostics(home, database)
+    assert any(item.newly_seen for item in first_diagnostics.unknown_diagnostics)
+
+    index_source(adapter, database, codex_home=home)
+    unchanged_diagnostics = run_deep_diagnostics(home, database)
+    assert unchanged_diagnostics.unknown_diagnostics
+    assert not any(item.newly_seen for item in unchanged_diagnostics.unknown_diagnostics)
 
 
 def test_removed_optional_fields_degrade_to_explicit_not_observed(tmp_path: Path) -> None:

@@ -213,6 +213,8 @@ class UnknownSourceObservation:
     kind: str
     name: str
     count: int
+    diagnostic_category: str = "unclassified"
+    capability_impact: str = "source_compatibility"
     first_seen_at: datetime | None = None
     last_seen_at: datetime | None = None
 

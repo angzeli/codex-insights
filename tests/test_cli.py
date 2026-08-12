@@ -142,11 +142,43 @@ def test_doctor_deep_reports_bounded_compatibility_diagnostics(
     assert payload["source_session_count"] == 4
     assert payload["indexed_session_count"] == 4
     assert payload["capability_coverage"]
+    assert payload["unknown_diagnostic_counts"]
+    assert payload["unknown_diagnostics"]
+    assert all(
+        set(item)
+        == {
+            "category",
+            "kind",
+            "name",
+            "occurrences",
+            "affected_sessions",
+            "first_seen_at",
+            "last_seen_at",
+            "newly_seen",
+            "capability_impact",
+        }
+        for item in payload["unknown_diagnostics"]
+    )
     assert payload["parser_versions"]["source_parser"].startswith(
         "codex-source-parser-"
     )
     assert source_database.read_bytes() == source_before
     assert database.read_bytes() == database_before
+
+    human = runner.invoke(
+        app,
+        [
+            "doctor",
+            "--deep",
+            "--codex-home",
+            str(synthetic_audit_home),
+            "--db",
+            str(database),
+        ],
+    )
+    assert human.exit_code == 0
+    assert "Top source-format diagnostics" in human.stdout
+    assert "semantic_gap" in human.stdout
 
 
 def test_doctor_deep_rejects_derived_database_inside_codex_home(
