@@ -191,6 +191,11 @@ def run_benchmark(config: BenchmarkConfig, *, workspace: Path) -> dict[str, obje
             "unchanged": _index_counts(unchanged),
             "changed_session": _index_counts(changed),
         },
+        "index_stage_timings_seconds": {
+            "fresh": dict(fresh.stage_timings_seconds),
+            "unchanged": dict(unchanged.stage_timings_seconds),
+            "changed_session": dict(changed.stage_timings_seconds),
+        },
         "artifacts": {
             "database_bytes": database.stat().st_size,
             "report_html_bytes": len(report_text.encode("utf-8")),

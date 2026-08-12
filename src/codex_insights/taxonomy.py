@@ -284,11 +284,23 @@ def classify_task(evidence: TaskEvidence) -> TaskClassification:
     )
 
 
-def reconcile_task_taxonomy(connection: sqlite3.Connection) -> None:
+def reconcile_task_taxonomy(
+    connection: sqlite3.Connection,
+    session_ids: set[int] | None = None,
+) -> None:
     """Persist idempotent classifications from logical prompts and originated activity."""
 
+    if session_ids is not None and not session_ids:
+        return
+    where = ""
+    parameters: tuple[int, ...] = ()
+    if session_ids is not None:
+        placeholders = ",".join("?" for _ in session_ids)
+        where = f"WHERE id IN ({placeholders})"
+        parameters = tuple(sorted(session_ids))
     sessions = connection.execute(
-        "SELECT id, repository_name FROM source_sessions ORDER BY id"
+        f"SELECT id, repository_name FROM source_sessions {where} ORDER BY id",
+        parameters,
     ).fetchall()
     for session in sessions:
         session_id = int(session["id"])

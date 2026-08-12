@@ -108,12 +108,25 @@ def extract_prompt_features(
     )
 
 
-def reconcile_prompt_features(connection: sqlite3.Connection) -> None:
+def reconcile_prompt_features(
+    connection: sqlite3.Connection,
+    session_ids: set[int] | None = None,
+) -> None:
     """Refresh prompt features idempotently from safe logical prompt rows."""
 
+    if session_ids is not None and not session_ids:
+        return
+    where = ""
+    parameters: tuple[int, ...] = ()
+    if session_ids is not None:
+        placeholders = ",".join("?" for _ in session_ids)
+        where = f"WHERE origin_session_id IN ({placeholders})"
+        parameters = tuple(sorted(session_ids))
     prompt_ids: set[int] = set()
     for row in connection.execute(
-        "SELECT id, text, original_character_count, redaction_status FROM prompts ORDER BY id"
+        "SELECT id, text, original_character_count, redaction_status FROM prompts "
+        f"{where} ORDER BY id",
+        parameters,
     ):
         prompt_id = int(row["id"])
         prompt_ids.add(prompt_id)
@@ -123,6 +136,8 @@ def reconcile_prompt_features(connection: sqlite3.Connection) -> None:
             source_truncated="truncated" in str(row["redaction_status"]),
         )
         _upsert_features(connection, prompt_id, features)
+    if session_ids is not None:
+        return
     if prompt_ids:
         placeholders = ",".join("?" for _ in prompt_ids)
         with connection:

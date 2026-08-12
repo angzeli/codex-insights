@@ -9,6 +9,7 @@ from contextlib import closing
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
+from time import perf_counter
 from typing import Any, Protocol, cast
 
 from codex_insights.adapters.base import SourceChangedDuringParseError
@@ -41,7 +42,11 @@ from codex_insights.privacy import (
     ContentRetentionPolicy,
     redact_prompt,
 )
-from codex_insights.prompt_features import reconcile_prompt_features
+from codex_insights.prompt_features import (
+    PROMPT_FEATURE_VERSION,
+    REQUIREMENT_HEURISTIC_VERSION,
+    reconcile_prompt_features,
+)
 from codex_insights.provenance import (
     PROVENANCE_ALGORITHM_VERSION,
     EventFamilyAssessment,
@@ -100,6 +105,7 @@ class IndexReport:
     skipped: int = 0
     failed: int = 0
     warnings: tuple[str, ...] = ()
+    stage_timings_seconds: tuple[tuple[str, float], ...] = ()
 
 
 def index_source(
@@ -115,6 +121,8 @@ def index_source(
     counts = {name: 0 for name in ("new", "updated", "unchanged", "skipped", "failed")}
     warnings: list[str] = []
     parsed_sessions: dict[str, ParsedSourceSession] = {}
+    dirty_session_ids: set[int] = set()
+    stage_timings: dict[str, float] = {}
     policy = retention_policy or ContentRetentionPolicy()
     with closing(open_index(database_path, codex_home=codex_home)) as connection:
         previous_policy = _indexed_retention_policy(connection)
@@ -124,7 +132,9 @@ def index_source(
         )
         run_id = _start_run(connection, codex_home=codex_home, started_at=now)
         try:
+            stage_started = perf_counter()
             candidates, discovery_warnings = adapter.discover_sessions()
+            stage_timings["source_discovery"] = perf_counter() - stage_started
             warnings.extend(discovery_warnings)
             _record_source_compatibility(
                 connection,
@@ -142,20 +152,31 @@ def index_source(
                     run_id=run_id,
                     warnings=warnings,
                     force_reparse=force_content_reparse,
+                    dirty_session_ids=dirty_session_ids,
                 )
-            _reconcile_repositories(connection)
+            dirty_session_ids.update(_repository_version_dirty_session_ids(connection))
+            stage_started = perf_counter()
+            affected_repository_ids = _reconcile_repositories(
+                connection,
+                dirty_session_ids=dirty_session_ids,
+            )
+            stage_timings["repository_reconciliation"] = perf_counter() - stage_started
             relationships, relationship_warnings = _discover_relationships(adapter)
             warnings.extend(relationship_warnings)
-            warnings.extend(
-                _reconcile_relationships(
-                    connection,
-                    adapter=adapter,
-                    candidates=candidates,
-                    parsed_sessions=parsed_sessions,
-                    relationships=relationships,
-                    codex_home=codex_home,
-                    run_id=run_id,
-                )
+            stage_started = perf_counter()
+            relationship_warnings, relationship_dirty_ids = _reconcile_relationships(
+                connection,
+                adapter=adapter,
+                candidates=candidates,
+                parsed_sessions=parsed_sessions,
+                relationships=relationships,
+                codex_home=codex_home,
+                run_id=run_id,
+            )
+            warnings.extend(relationship_warnings)
+            dirty_session_ids.update(relationship_dirty_ids)
+            stage_timings["lineage_provenance_reconciliation"] = (
+                perf_counter() - stage_started
             )
             _reconcile_tool_activity(
                 connection,
@@ -164,28 +185,51 @@ def index_source(
                 parsed_sessions=parsed_sessions,
                 store_command_text=policy.store_command_text,
             )
-            warnings.extend(reconcile_git_commits(connection))
-            reconcile_session_outcomes(connection)
-            if policy.store_prompts:
+            version_dirty_ids = _version_dirty_session_ids(connection)
+            dirty_session_ids.update(version_dirty_ids)
+            if affected_repository_ids:
+                dirty_session_ids.update(
+                    _session_ids_for_repositories(connection, affected_repository_ids)
+                )
+            stage_started = perf_counter()
+            warnings.extend(reconcile_git_commits(connection, affected_repository_ids))
+            stage_timings["git_reconciliation"] = perf_counter() - stage_started
+            stage_started = perf_counter()
+            reconcile_session_outcomes(connection, dirty_session_ids)
+            stage_timings["outcome_reconciliation"] = perf_counter() - stage_started
+            if policy.store_prompts and parsed_sessions:
                 _reconcile_prompts(
                     connection,
                     adapter=adapter,
                     codex_home=codex_home,
                     parsed_sessions=parsed_sessions,
                 )
-            else:
+            elif parsed_sessions or relationship_dirty_ids:
                 with connection:
                     _sync_prompt_observations(connection)
-            reconcile_prompt_features(connection)
-            reconcile_task_taxonomy(connection)
-            warnings.extend(
-                _record_coverage_snapshots(
+            stage_started = perf_counter()
+            reconcile_prompt_features(connection, dirty_session_ids)
+            reconcile_task_taxonomy(connection, dirty_session_ids)
+            stage_timings["features_taxonomy_reconciliation"] = (
+                perf_counter() - stage_started
+            )
+            stage_started = perf_counter()
+            if dirty_session_ids or force_content_reparse:
+                warnings.extend(
+                    _record_coverage_snapshots(
+                        connection,
+                        run_id=run_id,
+                        adapter=adapter,
+                        codex_home=codex_home,
+                    )
+                )
+            else:
+                _copy_previous_coverage_snapshots(
                     connection,
                     run_id=run_id,
-                    adapter=adapter,
                     codex_home=codex_home,
                 )
-            )
+            stage_timings["coverage_snapshots"] = perf_counter() - stage_started
             _finish_run(
                 connection,
                 run_id=run_id,
@@ -213,6 +257,7 @@ def index_source(
         skipped=counts["skipped"],
         failed=counts["failed"],
         warnings=tuple(warnings),
+        stage_timings_seconds=tuple(sorted(stage_timings.items())),
     )
 
 
@@ -226,6 +271,7 @@ def _index_candidate(
     run_id: int,
     warnings: list[str],
     force_reparse: bool,
+    dirty_session_ids: set[int],
 ) -> None:
     session = candidate.session
     existing = _existing_session(connection, session)
@@ -235,7 +281,9 @@ def _index_candidate(
     if not candidate.rollout_allowed or not candidate.rollout_exists:
         status = "outside_codex_home" if not candidate.rollout_allowed else "missing"
         with connection:
-            session_id, is_new, _ = _upsert_session_metadata(connection, catalogue_session)
+            session_id, is_new, metadata_changed = _upsert_session_metadata(
+                connection, catalogue_session
+            )
             if is_new:
                 _replace_usage(connection, session_id, NormalizedUsage())
             if not _state_matches_status(
@@ -270,6 +318,8 @@ def _index_candidate(
                     parser_version=adapter.parser_version,
                 )
         counts["skipped"] += 1
+        if is_new or metadata_changed:
+            dirty_session_ids.add(session_id)
         return
 
     if not force_reparse and existing is not None and _source_unchanged(
@@ -278,8 +328,12 @@ def _index_candidate(
         parser_version=adapter.parser_version,
     ):
         with connection:
-            _, _, metadata_changed = _upsert_session_metadata(connection, catalogue_session)
+            session_id, _, metadata_changed = _upsert_session_metadata(
+                connection, catalogue_session
+            )
         counts["updated" if metadata_changed else "unchanged"] += 1
+        if metadata_changed:
+            dirty_session_ids.add(session_id)
         return
 
     try:
@@ -361,6 +415,7 @@ def _index_candidate(
                 stale=parsed.partial_final_line,
             )
         parsed_sessions[session.source_session_id] = parsed
+        dirty_session_ids.add(session_id)
         warnings.extend(
             f"{session.source_session_id}: {item.code} ({item.count})."
             for item in parsed.semantic_warnings
@@ -406,6 +461,8 @@ def _index_candidate(
                 stale=existing is not None,
             )
         counts["failed"] += 1
+        if is_new:
+            dirty_session_ids.add(session_id)
 
 
 def _parse_with_retry(
@@ -447,6 +504,68 @@ def _has_previous_good(state: sqlite3.Row | None) -> bool:
     )
 
 
+def _version_dirty_session_ids(connection: sqlite3.Connection) -> set[int]:
+    """Return sessions whose persisted derived classifier versions are stale or absent."""
+
+    rows = connection.execute(
+        """
+        SELECT sessions.id
+        FROM source_sessions AS sessions
+        LEFT JOIN session_outcomes AS outcomes ON outcomes.session_id = sessions.id
+        WHERE outcomes.session_id IS NULL OR outcomes.classifier_version != ?
+        UNION
+        SELECT sessions.id
+        FROM source_sessions AS sessions
+        LEFT JOIN session_tasks AS tasks ON tasks.session_id = sessions.id
+        WHERE tasks.session_id IS NULL OR tasks.taxonomy_version != ?
+        UNION
+        SELECT prompts.origin_session_id
+        FROM prompts
+        LEFT JOIN prompt_features AS features ON features.prompt_id = prompts.id
+        WHERE features.prompt_id IS NULL OR features.feature_version != ?
+           OR features.requirement_heuristic_version != ?
+        """,
+        (
+            OUTCOME_CLASSIFIER_VERSION,
+            TASK_TAXONOMY_VERSION,
+            PROMPT_FEATURE_VERSION,
+            REQUIREMENT_HEURISTIC_VERSION,
+        ),
+    ).fetchall()
+    return {int(row[0]) for row in rows}
+
+
+def _repository_version_dirty_session_ids(connection: sqlite3.Connection) -> set[int]:
+    return {
+        int(row[0])
+        for row in connection.execute(
+            """
+            SELECT sessions.id
+            FROM source_sessions AS sessions
+            JOIN repositories ON repositories.id = sessions.repository_id
+            WHERE repositories.identity_version != ?
+            """,
+            (REPOSITORY_IDENTITY_VERSION,),
+        )
+    }
+
+
+def _session_ids_for_repositories(
+    connection: sqlite3.Connection,
+    repository_ids: set[int],
+) -> set[int]:
+    if not repository_ids:
+        return set()
+    placeholders = ",".join("?" for _ in repository_ids)
+    return {
+        int(row[0])
+        for row in connection.execute(
+            f"SELECT id FROM source_sessions WHERE repository_id IN ({placeholders})",
+            tuple(sorted(repository_ids)),
+        )
+    }
+
+
 def _discover_relationships(
     adapter: IndexSourceAdapter,
 ) -> tuple[tuple[NormalizedThreadRelationship, ...], tuple[str, ...]]:
@@ -460,17 +579,31 @@ def _discover_relationships(
     return result
 
 
-def _reconcile_repositories(connection: sqlite3.Connection) -> None:
+def _reconcile_repositories(
+    connection: sqlite3.Connection,
+    *,
+    dirty_session_ids: set[int],
+) -> set[int]:
     """Attach sessions to stable remote/common-dir/path repository identities."""
 
+    if not dirty_session_ids:
+        return set()
+    placeholders = ",".join("?" for _ in dirty_session_ids)
     rows = connection.execute(
-        """
-        SELECT id, repository_root, repository_name, git_origin_url,
+        f"""
+        SELECT id, repository_id, repository_root, repository_name, git_origin_url,
                COALESCE(updated_at, started_at, first_ingested_at) AS activity_time
         FROM source_sessions
+        WHERE id IN ({placeholders})
         ORDER BY activity_time, id
-        """
+        """,
+        tuple(sorted(dirty_session_ids)),
     ).fetchall()
+    affected_repository_ids = {
+        int(row["repository_id"])
+        for row in rows
+        if row["repository_id"] is not None
+    }
     session_keys: dict[int, str | None] = {}
     identities: dict[str, RepositoryIdentity] = {}
     for row in rows:
@@ -550,6 +683,8 @@ def _reconcile_repositories(connection: sqlite3.Connection) -> None:
                 for session_id, key in sorted(session_keys.items())
             ),
         )
+    affected_repository_ids.update(repository_ids.values())
+    return affected_repository_ids
 
 
 def _reconcile_relationships(
@@ -561,7 +696,7 @@ def _reconcile_relationships(
     relationships: tuple[NormalizedThreadRelationship, ...],
     codex_home: Path,
     run_id: int,
-) -> tuple[str, ...]:
+) -> tuple[tuple[str, ...], set[int]]:
     """Persist explicit topology and recompute only affected child accounting."""
 
     source_home = str(codex_home.expanduser().resolve(strict=False))
@@ -674,10 +809,24 @@ def _reconcile_relationships(
             (adapter.name, source_home, PROVENANCE_ALGORITHM_VERSION),
         )
     }
+    stale_lineage_source_ids = {
+        str(row["source_session_id"])
+        for row in connection.execute(
+            """
+            SELECT sessions.source_session_id
+            FROM token_lineage AS lineage
+            JOIN source_sessions AS sessions ON sessions.id = lineage.child_session_id
+            WHERE sessions.source_type = ? AND sessions.source_home = ?
+              AND lineage.algorithm_version != ?
+            """,
+            (adapter.name, source_home, LINEAGE_ALGORITHM_VERSION),
+        )
+    }
     affected_provenance_source_ids = (
         set(parsed_sessions)
         | changed_relationship_source_ids
         | stale_provenance_source_ids
+        | stale_lineage_source_ids
     )
     descendants_by_parent: dict[str, set[str]] = {}
     for relationship in relationships:
@@ -792,7 +941,12 @@ def _reconcile_relationships(
         cycle_source_ids=topology.cycle_nodes,
         affected_source_ids=frozenset(affected_provenance_source_ids),
     )
-    return tuple(warnings)
+    affected_internal_ids = {
+        internal_ids[source_id]
+        for source_id in affected_provenance_source_ids
+        if source_id in internal_ids
+    }
+    return tuple(warnings), affected_internal_ids
 
 
 def _reconcile_tool_activity(
@@ -805,6 +959,8 @@ def _reconcile_tool_activity(
 ) -> None:
     """Persist bounded tool metadata after the shared event provenance pass."""
 
+    if not parsed_sessions:
+        return
     source_home = str(codex_home.expanduser().resolve(strict=False))
     session_ids = {
         str(row["source_session_id"]): int(row["id"])
@@ -2364,6 +2520,47 @@ def _insert_semantic_warnings(
             for item in parsed.semantic_warnings
         ),
     )
+
+
+def _copy_previous_coverage_snapshots(
+    connection: sqlite3.Connection,
+    *,
+    run_id: int,
+    codex_home: Path,
+) -> None:
+    """Carry forward identical coverage for a proven unchanged run without rescanning."""
+
+    source_home = str(codex_home.expanduser().resolve(strict=False))
+    previous_run = connection.execute(
+        """
+        SELECT MAX(runs.id)
+        FROM index_runs AS runs
+        WHERE runs.status = 'completed' AND runs.source_home = ? AND runs.id < ?
+          AND EXISTS (
+              SELECT 1 FROM coverage_snapshots AS snapshots
+              WHERE snapshots.index_run_id = runs.id
+          )
+        """,
+        (source_home, run_id),
+    ).fetchone()[0]
+    if previous_run is None:
+        return
+    with connection:
+        connection.execute(
+            """
+            INSERT INTO coverage_snapshots(
+                index_run_id, capability, available_count, degraded_count,
+                not_observed_count, unknown_count, total_count,
+                coverage_ratio, recorded_at
+            )
+            SELECT ?, capability, available_count, degraded_count,
+                   not_observed_count, unknown_count, total_count,
+                   coverage_ratio, ?
+            FROM coverage_snapshots
+            WHERE index_run_id = ?
+            """,
+            (run_id, _utc_now(), int(previous_run)),
+        )
 
 
 def _record_coverage_snapshots(

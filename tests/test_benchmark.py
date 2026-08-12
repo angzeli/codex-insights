@@ -20,6 +20,7 @@ def test_small_benchmark_exercises_fresh_unchanged_and_changed_paths(
     index_results = result["index_results"]
     timings = result["timings_seconds"]
     artifacts = result["artifacts"]
+    stage_timings = result["index_stage_timings_seconds"]
 
     assert result["schema"] == "codex-insights-benchmark-v1"
     assert index_results["fresh"]["new"] == 60
@@ -32,6 +33,9 @@ def test_small_benchmark_exercises_fresh_unchanged_and_changed_paths(
     assert timings["report_generation"] > 0
     assert timings["dashboard_generation"] > 0
     assert timings["queries"]["prompt_search"] > 0
+    assert stage_timings["fresh"]["coverage_snapshots"] > 0
+    assert stage_timings["unchanged"]["coverage_snapshots"] > 0
+    assert stage_timings["changed_session"]["outcome_reconciliation"] > 0
     assert artifacts["database_bytes"] > 0
     assert artifacts["dashboard_html_bytes"] < 500_000
     assert "fresh index" in render_summary(result)

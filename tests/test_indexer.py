@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
+from codex_insights import indexer as indexer_module
 from codex_insights.adapters import CodexLocalAdapter
 from codex_insights.cli import app
 from codex_insights.config import resolve_codex_home
@@ -140,6 +141,73 @@ def test_index_is_idempotent_when_sources_are_unchanged(
     assert second.skipped == 1
     assert second.failed == 0
     assert before == after
+
+
+def test_unchanged_run_uses_empty_dirty_sets_and_carries_coverage_forward(
+    synthetic_audit_home: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database = tmp_path / "index.sqlite3"
+    adapter = CodexLocalAdapter(resolve_codex_home(synthetic_audit_home))
+    index_source(adapter, database, codex_home=synthetic_audit_home)
+    observed: dict[str, object] = {}
+
+    original_git = indexer_module.reconcile_git_commits
+    original_outcomes = indexer_module.reconcile_session_outcomes
+    original_features = indexer_module.reconcile_prompt_features
+    original_taxonomy = indexer_module.reconcile_task_taxonomy
+
+    def git_wrapper(connection: sqlite3.Connection, ids: set[int] | None = None) -> tuple[str, ...]:
+        observed["git"] = set(ids or ())
+        return original_git(connection, ids)
+
+    def outcome_wrapper(
+        connection: sqlite3.Connection, ids: set[int] | None = None
+    ) -> None:
+        observed["outcomes"] = set(ids or ())
+        original_outcomes(connection, ids)
+
+    def feature_wrapper(
+        connection: sqlite3.Connection, ids: set[int] | None = None
+    ) -> None:
+        observed["features"] = set(ids or ())
+        original_features(connection, ids)
+
+    def taxonomy_wrapper(
+        connection: sqlite3.Connection, ids: set[int] | None = None
+    ) -> None:
+        observed["taxonomy"] = set(ids or ())
+        original_taxonomy(connection, ids)
+
+    monkeypatch.setattr(indexer_module, "reconcile_git_commits", git_wrapper)
+    monkeypatch.setattr(indexer_module, "reconcile_session_outcomes", outcome_wrapper)
+    monkeypatch.setattr(indexer_module, "reconcile_prompt_features", feature_wrapper)
+    monkeypatch.setattr(indexer_module, "reconcile_task_taxonomy", taxonomy_wrapper)
+
+    report = index_source(adapter, database, codex_home=synthetic_audit_home)
+
+    assert report.unchanged == 3
+    assert observed == {"git": set(), "outcomes": set(), "features": set(), "taxonomy": set()}
+    with sqlite3.connect(database) as connection:
+        run_ids = [
+            row[0]
+            for row in connection.execute(
+                "SELECT id FROM index_runs WHERE status = 'completed' ORDER BY id DESC LIMIT 2"
+            )
+        ]
+        snapshots = [
+            tuple(
+                connection.execute(
+                    "SELECT capability, available_count, degraded_count, not_observed_count, "
+                    "unknown_count, total_count, coverage_ratio FROM coverage_snapshots "
+                    "WHERE index_run_id = ? ORDER BY capability",
+                    (run_id,),
+                )
+            )
+            for run_id in run_ids
+        ]
+    assert snapshots[0] == snapshots[1]
 
 
 def test_unchanged_archived_session_preserves_later_rollout_end(

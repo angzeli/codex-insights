@@ -166,10 +166,24 @@ def classify_outcome(evidence: tuple[OutcomeEvidence, ...]) -> OutcomeAssessment
     )
 
 
-def reconcile_session_outcomes(connection: sqlite3.Connection) -> None:
+def reconcile_session_outcomes(
+    connection: sqlite3.Connection,
+    session_ids: set[int] | None = None,
+) -> None:
     """Build and persist assessments from normalized originated evidence only."""
 
-    sessions = connection.execute("SELECT id FROM source_sessions ORDER BY id").fetchall()
+    if session_ids is not None and not session_ids:
+        return
+    where = ""
+    parameters: tuple[int, ...] = ()
+    if session_ids is not None:
+        placeholders = ",".join("?" for _ in session_ids)
+        where = f"WHERE id IN ({placeholders})"
+        parameters = tuple(sorted(session_ids))
+    sessions = connection.execute(
+        f"SELECT id FROM source_sessions {where} ORDER BY id",
+        parameters,
+    ).fetchall()
     for session in sessions:
         session_id = int(session["id"])
         evidence = _session_evidence(connection, session_id)

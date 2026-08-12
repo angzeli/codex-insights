@@ -36,12 +36,24 @@ class CommitAssociation:
     ambiguous: bool
 
 
-def reconcile_git_commits(connection: sqlite3.Connection) -> tuple[str, ...]:
+def reconcile_git_commits(
+    connection: sqlite3.Connection,
+    repository_ids: set[int] | None = None,
+) -> tuple[str, ...]:
     """Refresh derived Git evidence without mutating any user repository."""
 
+    if repository_ids is not None and not repository_ids:
+        return ()
+    where = "WHERE canonical_root IS NOT NULL"
+    parameters: tuple[int, ...] = ()
+    if repository_ids is not None:
+        placeholders = ",".join("?" for _ in repository_ids)
+        where += f" AND id IN ({placeholders})"
+        parameters = tuple(sorted(repository_ids))
     warnings: list[str] = []
     repositories = connection.execute(
-        "SELECT id, canonical_root FROM repositories WHERE canonical_root IS NOT NULL"
+        f"SELECT id, canonical_root FROM repositories {where}",
+        parameters,
     ).fetchall()
     for repository in repositories:
         repository_id = int(repository["id"])
