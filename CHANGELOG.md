@@ -17,6 +17,14 @@ All notable changes to Codex Insights are documented here.
   Git candidate state, effective tool timestamps, and measured analytics indexes;
 - aggregated tool analytics in SQL and removed per-repository task-query loops from reports and the
   static dashboard.
+- decomposed task-taxonomy coverage into prompt-backed, originated-activity-only,
+  repository-fallback-only, and no-origin-evidence populations without broadening classifier rules;
+- surfaced source/index lag, latest successful indexing, missing rollout, compatibility, token
+  lineage, and event-provenance summaries in human `doctor --deep` output;
+- added visible keyboard focus, 44-pixel controls, WCAG AA light-theme contrast, and programmatic
+  table names/scoped headers to static dashboards and HTML reports;
+- added focused Python 3.11/3.14 Windows wheel-install workflow coverage and made benchmark memory
+  reporting explicitly unavailable when the POSIX `resource` module is absent.
 
 ## 1.1.0 - 2026-08-12
 
