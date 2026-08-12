@@ -78,18 +78,20 @@ def outcomes_command(
     summary.add_column("Metric", style="bold cyan")
     summary.add_column("Value", justify="right")
     summary.add_row("Sessions", f"{report.session_count:,}")
-    summary.add_row("Classifiable", f"{report.classifiable_count:,}")
+    summary.add_row("Strongly evidenced", f"{report.strongly_evidenced_count:,}")
+    summary.add_row("Broad non-UNKNOWN", f"{report.classifiable_count:,}")
     summary.add_row("UNKNOWN", f"{report.unknown_count:,}")
     console.print(summary)
 
     outcomes = Table(title="Outcome distribution", box=None, pad_edge=False)
     outcomes.add_column("Outcome")
     outcomes.add_column("Count", justify="right")
-    outcomes.add_column("Among classifiable", justify="right")
+    outcomes.add_column("Among strong", justify="right")
+    strong_outcomes = dict(report.strong_outcomes)
     for label, count in report.outcomes:
         fraction = (
-            f"{count / report.classifiable_count:.1%}"
-            if report.classifiable_count and label != "unknown"
+            f"{strong_outcomes.get(label, 0) / report.strongly_evidenced_count:.1%}"
+            if report.strongly_evidenced_count and label != "unknown"
             else "—"
         )
         outcomes.add_row(label, f"{count:,}", fraction)

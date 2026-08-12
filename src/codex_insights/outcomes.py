@@ -11,7 +11,7 @@ from typing import Any
 
 from codex_insights.models import SessionOutcome
 
-OUTCOME_CLASSIFIER_VERSION = "outcome-classifier-v1"
+OUTCOME_CLASSIFIER_VERSION = "outcome-classifier-v2"
 
 
 class OutcomeConfidence(StrEnum):
@@ -20,6 +20,14 @@ class OutcomeConfidence(StrEnum):
     HIGH = "high"
     MEDIUM = "medium"
     LOW = "low"
+
+
+class LifecycleStatus(StrEnum):
+    """Turn lifecycle state kept separate from task-outcome evidence."""
+
+    TURN_COMPLETED = "turn_completed"
+    ABORTED = "aborted"
+    UNKNOWN = "unknown"
 
 
 class OutcomeEvidenceKind(StrEnum):
@@ -50,7 +58,15 @@ class OutcomeAssessment:
     outcome: SessionOutcome
     confidence: OutcomeConfidence
     evidence: tuple[str, ...]
+    lifecycle_status: LifecycleStatus
     classifier_version: str = OUTCOME_CLASSIFIER_VERSION
+
+    @property
+    def strongly_evidenced(self) -> bool:
+        return (
+            self.outcome is not SessionOutcome.UNKNOWN
+            and self.confidence in {OutcomeConfidence.HIGH, OutcomeConfidence.MEDIUM}
+        )
 
 
 def classify_outcome(evidence: tuple[OutcomeEvidence, ...]) -> OutcomeAssessment:
@@ -58,34 +74,51 @@ def classify_outcome(evidence: tuple[OutcomeEvidence, ...]) -> OutcomeAssessment
 
     ordered = tuple(sorted(evidence, key=lambda item: item.sequence))
     if not ordered:
-        return _assessment(SessionOutcome.UNKNOWN, OutcomeConfidence.LOW, "no_originated_evidence")
+        return _assessment(
+            SessionOutcome.UNKNOWN,
+            OutcomeConfidence.LOW,
+            LifecycleStatus.UNKNOWN,
+            "no_originated_evidence",
+        )
     kinds = tuple(item.kind for item in ordered)
     last_abort = _last_index(kinds, OutcomeEvidenceKind.ABORT)
+    last_task_complete = _last_index(kinds, OutcomeEvidenceKind.TASK_COMPLETE)
+    lifecycle_status = (
+        LifecycleStatus.ABORTED
+        if last_abort > last_task_complete
+        else (
+            LifecycleStatus.TURN_COMPLETED
+            if last_task_complete >= 0
+            else LifecycleStatus.UNKNOWN
+        )
+    )
     last_validation_fail = _last_index(kinds, OutcomeEvidenceKind.VALIDATION_FAIL)
     last_validation_pass = _last_index(kinds, OutcomeEvidenceKind.VALIDATION_PASS)
     last_error = _last_index(kinds, OutcomeEvidenceKind.ERROR)
     last_positive = max(
         _last_index(kinds, OutcomeEvidenceKind.VALIDATION_PASS),
         _last_index(kinds, OutcomeEvidenceKind.HIGH_COMMIT),
-        _last_index(kinds, OutcomeEvidenceKind.TASK_COMPLETE),
     )
 
-    if last_abort >= 0 and last_positive <= last_abort:
+    if lifecycle_status is LifecycleStatus.ABORTED:
         return _assessment(
             SessionOutcome.ABANDONED,
             OutcomeConfidence.HIGH,
+            lifecycle_status,
             "originated_abort_without_later_completion",
         )
     if last_validation_fail >= 0 and last_validation_pass <= last_validation_fail:
         return _assessment(
             SessionOutcome.FAILED,
             OutcomeConfidence.HIGH,
+            lifecycle_status,
             "final_originated_validation_failure_without_recovery",
         )
     if last_error >= 0 and last_positive <= last_error:
         return _assessment(
             SessionOutcome.FAILED,
             OutcomeConfidence.MEDIUM,
+            lifecycle_status,
             "final_originated_error_without_recovery",
         )
     recovered = last_validation_fail >= 0 and last_validation_pass > last_validation_fail
@@ -93,6 +126,7 @@ def classify_outcome(evidence: tuple[OutcomeEvidence, ...]) -> OutcomeAssessment
         return _assessment(
             SessionOutcome.SUCCESS_WITH_WARNINGS,
             OutcomeConfidence.MEDIUM,
+            lifecycle_status,
             "originated_validation_failure_followed_by_pass",
             "recovery_observed",
         )
@@ -100,31 +134,34 @@ def classify_outcome(evidence: tuple[OutcomeEvidence, ...]) -> OutcomeAssessment
         return _assessment(
             SessionOutcome.SUCCESS,
             OutcomeConfidence.MEDIUM,
+            lifecycle_status,
             "high_confidence_commit_without_later_failure",
         )
     if OutcomeEvidenceKind.VALIDATION_PASS in kinds:
         return _assessment(
             SessionOutcome.SUCCESS,
             OutcomeConfidence.MEDIUM,
+            lifecycle_status,
             "originated_validation_pass_without_later_failure",
-        )
-    if OutcomeEvidenceKind.TASK_COMPLETE in kinds and (
-        OutcomeEvidenceKind.EDIT in kinds or len(ordered) > 1
-    ):
-        return _assessment(
-            SessionOutcome.SUCCESS,
-            OutcomeConfidence.LOW,
-            "originated_task_complete_with_supporting_activity",
         )
     if OutcomeEvidenceKind.EDIT in kinds:
         return _assessment(
             SessionOutcome.PARTIAL,
             OutcomeConfidence.LOW,
-            "originated_edit_without_completion_or_validation",
+            lifecycle_status,
+            "originated_edit_without_strong_outcome_evidence",
+        )
+    if lifecycle_status is LifecycleStatus.TURN_COMPLETED:
+        return _assessment(
+            SessionOutcome.UNKNOWN,
+            OutcomeConfidence.LOW,
+            lifecycle_status,
+            "turn_completed_without_task_outcome_evidence",
         )
     return _assessment(
         SessionOutcome.UNKNOWN,
         OutcomeConfidence.LOW,
+        lifecycle_status,
         "insufficient_originated_evidence",
     )
 
@@ -248,10 +285,13 @@ def _upsert_assessment(
         assessment.confidence.value,
         evidence_json,
         evidence_count,
+        assessment.lifecycle_status.value,
+        int(assessment.strongly_evidenced),
         assessment.classifier_version,
     )
     existing = connection.execute(
-        "SELECT outcome, confidence, evidence_json, evidence_count, classifier_version "
+        "SELECT outcome, confidence, evidence_json, evidence_count, lifecycle_status, "
+        "strongly_evidenced, classifier_version "
         "FROM session_outcomes WHERE session_id = ?",
         (session_id,),
     ).fetchone()
@@ -262,13 +302,16 @@ def _upsert_assessment(
             """
             INSERT INTO session_outcomes(
                 session_id, outcome, confidence, evidence_json,
-                evidence_count, classifier_version, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                evidence_count, lifecycle_status, strongly_evidenced,
+                classifier_version, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(session_id) DO UPDATE SET
                 outcome = excluded.outcome,
                 confidence = excluded.confidence,
                 evidence_json = excluded.evidence_json,
                 evidence_count = excluded.evidence_count,
+                lifecycle_status = excluded.lifecycle_status,
+                strongly_evidenced = excluded.strongly_evidenced,
                 classifier_version = excluded.classifier_version,
                 updated_at = excluded.updated_at
             """,
@@ -283,9 +326,15 @@ def _upsert_assessment(
 def _assessment(
     outcome: SessionOutcome,
     confidence: OutcomeConfidence,
+    lifecycle_status: LifecycleStatus,
     *evidence: str,
 ) -> OutcomeAssessment:
-    return OutcomeAssessment(outcome=outcome, confidence=confidence, evidence=tuple(evidence))
+    return OutcomeAssessment(
+        outcome=outcome,
+        confidence=confidence,
+        evidence=tuple(evidence),
+        lifecycle_status=lifecycle_status,
+    )
 
 
 def _last_index(

@@ -14,6 +14,7 @@ from codex_insights.config import resolve_codex_home
 from codex_insights.indexer import index_source
 from codex_insights.models import SessionOutcome
 from codex_insights.outcomes import (
+    LifecycleStatus,
     OutcomeConfidence,
     OutcomeEvidence,
     OutcomeEvidenceKind,
@@ -86,6 +87,30 @@ def test_expected_probe_failure_is_not_itself_failure_evidence() -> None:
     assert result.evidence == ("no_originated_evidence",)
 
 
+def test_turn_completion_is_lifecycle_not_task_success() -> None:
+    result = classify_outcome(
+        (
+            OutcomeEvidence(sequence=1, kind=OutcomeEvidenceKind.EDIT),
+            OutcomeEvidence(sequence=2, kind=OutcomeEvidenceKind.TASK_COMPLETE),
+        )
+    )
+
+    assert result.outcome is SessionOutcome.PARTIAL
+    assert result.confidence is OutcomeConfidence.LOW
+    assert result.lifecycle_status is LifecycleStatus.TURN_COMPLETED
+    assert result.strongly_evidenced is False
+
+
+def test_completion_without_task_evidence_remains_unknown() -> None:
+    result = classify_outcome(
+        (OutcomeEvidence(sequence=1, kind=OutcomeEvidenceKind.TASK_COMPLETE),)
+    )
+
+    assert result.outcome is SessionOutcome.UNKNOWN
+    assert result.lifecycle_status is LifecycleStatus.TURN_COMPLETED
+    assert result.evidence == ("turn_completed_without_task_outcome_evidence",)
+
+
 def test_inherited_validation_does_not_classify_child_and_index_is_idempotent(
     tmp_path: Path,
 ) -> None:
@@ -149,6 +174,7 @@ def test_inherited_validation_does_not_classify_child_and_index_is_idempotent(
     report = get_outcome_report(database, codex_home=codex_home)
     assert report.session_count == 2
     assert report.classifiable_count == 1
+    assert report.strongly_evidenced_count == 1
     assert report.unknown_count == 1
     cli = runner.invoke(
         app,
@@ -162,7 +188,10 @@ def test_inherited_validation_does_not_classify_child_and_index_is_idempotent(
         ],
     )
     assert cli.exit_code == 0
-    assert json.loads(cli.stdout)["unknown_count"] == 1
+    payload = json.loads(cli.stdout)
+    assert payload["unknown_count"] == 1
+    assert payload["strongly_evidenced_count"] == 1
+    assert payload["lifecycle_semantics"] == "originated_turn_lifecycle_evidence"
 
 
 def _validation_records(

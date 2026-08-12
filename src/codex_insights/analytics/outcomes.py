@@ -39,6 +39,8 @@ class OutcomeSessionItem:
     outcome: str
     confidence: str
     evidence: tuple[str, ...]
+    lifecycle_status: str
+    strongly_evidenced: bool
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -49,6 +51,8 @@ class OutcomeSessionItem:
             "outcome": self.outcome,
             "confidence": self.confidence,
             "evidence": list(self.evidence),
+            "lifecycle_status": self.lifecycle_status,
+            "strongly_evidenced": self.strongly_evidenced,
         }
 
 
@@ -58,16 +62,22 @@ class OutcomeReport:
 
     session_count: int
     classifiable_count: int
+    strongly_evidenced_count: int
     unknown_count: int
     outcomes: tuple[tuple[str, int], ...]
+    strong_outcomes: tuple[tuple[str, int], ...]
     confidence: tuple[tuple[str, int], ...]
+    lifecycle: tuple[tuple[str, int], ...]
     sessions: tuple[OutcomeSessionItem, ...]
 
     def to_dict(self) -> dict[str, object]:
         denominator = self.classifiable_count
+        strong_denominator = self.strongly_evidenced_count
+        strong = dict(self.strong_outcomes)
         return {
             "session_count": self.session_count,
             "classifiable_count": self.classifiable_count,
+            "strongly_evidenced_count": self.strongly_evidenced_count,
             "unknown_count": self.unknown_count,
             "outcomes": {
                 key: {
@@ -75,12 +85,20 @@ class OutcomeReport:
                     "fraction_of_classifiable": (
                         count / denominator if denominator and key != "unknown" else None
                     ),
+                    "strong_count": strong.get(key, 0),
+                    "fraction_of_strongly_evidenced": (
+                        strong.get(key, 0) / strong_denominator
+                        if strong_denominator and key != "unknown"
+                        else None
+                    ),
                 }
                 for key, count in self.outcomes
             },
             "confidence": dict(self.confidence),
+            "lifecycle": dict(self.lifecycle),
             "sessions": [item.to_dict() for item in self.sessions],
-            "classification_semantics": "originated_evidence",
+            "classification_semantics": "originated_task_outcome_evidence",
+            "lifecycle_semantics": "originated_turn_lifecycle_evidence",
         }
 
 
@@ -100,13 +118,22 @@ def get_outcome_report(
         rows = connection.execute(query, parameters).fetchall()
     outcomes = Counter(str(row["outcome"] or "unknown") for row in rows)
     confidence = Counter(str(row["confidence"] or "low") for row in rows)
+    lifecycle = Counter(str(row["lifecycle_status"] or "unknown") for row in rows)
+    strong_outcomes = Counter(
+        str(row["outcome"])
+        for row in rows
+        if bool(row["strongly_evidenced"])
+    )
     unknown = outcomes["unknown"]
     return OutcomeReport(
         session_count=len(rows),
         classifiable_count=len(rows) - unknown,
+        strongly_evidenced_count=sum(strong_outcomes.values()),
         unknown_count=unknown,
         outcomes=tuple(sorted(outcomes.items())),
+        strong_outcomes=tuple(sorted(strong_outcomes.items())),
         confidence=tuple(sorted(confidence.items())),
+        lifecycle=tuple(sorted(lifecycle.items())),
         sessions=tuple(_item(row) for row in rows[: selected.limit]),
     )
 
@@ -154,7 +181,9 @@ def _query(filters: OutcomeFilters) -> tuple[str, tuple[object, ...]]:
                sessions.repository_root, sessions.model,
                COALESCE(outcomes.outcome, 'unknown') AS outcome,
                COALESCE(outcomes.confidence, 'low') AS confidence,
-               COALESCE(outcomes.evidence_json, '[\"not_classified\"]') AS evidence_json
+               COALESCE(outcomes.evidence_json, '[\"not_classified\"]') AS evidence_json,
+               COALESCE(outcomes.lifecycle_status, 'unknown') AS lifecycle_status,
+               COALESCE(outcomes.strongly_evidenced, 0) AS strongly_evidenced
         FROM source_sessions AS sessions
         LEFT JOIN repositories AS repositories ON repositories.id = sessions.repository_id
         LEFT JOIN session_outcomes AS outcomes ON outcomes.session_id = sessions.id
@@ -183,6 +212,8 @@ def _item(row: sqlite3.Row) -> OutcomeSessionItem:
         outcome=str(row["outcome"]),
         confidence=str(row["confidence"]),
         evidence=evidence,
+        lifecycle_status=str(row["lifecycle_status"]),
+        strongly_evidenced=bool(row["strongly_evidenced"]),
     )
 
 

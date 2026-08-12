@@ -9,7 +9,7 @@ from pathlib import Path
 
 from codex_insights.path_safety import UnsafeDestinationError, validate_write_target
 
-SCHEMA_VERSION = 17
+SCHEMA_VERSION = 18
 
 _MIGRATION_1 = """
 CREATE TABLE source_sessions (
@@ -841,6 +841,22 @@ CREATE INDEX source_sessions_client_kind_idx ON source_sessions(client_kind);
 CREATE INDEX source_sessions_source_parent_idx ON source_sessions(source_parent_session_id);
 """
 
+_MIGRATION_18 = """
+ALTER TABLE session_outcomes ADD COLUMN lifecycle_status TEXT NOT NULL DEFAULT 'unknown'
+    CHECK (lifecycle_status IN ('turn_completed', 'aborted', 'unknown'));
+ALTER TABLE session_outcomes ADD COLUMN strongly_evidenced INTEGER NOT NULL DEFAULT 0
+    CHECK (strongly_evidenced IN (0, 1));
+
+UPDATE session_outcomes
+SET strongly_evidenced = CASE
+    WHEN outcome <> 'unknown' AND confidence IN ('high', 'medium') THEN 1
+    ELSE 0
+END;
+
+CREATE INDEX session_outcomes_strong_idx
+    ON session_outcomes(strongly_evidenced, outcome);
+"""
+
 _MIGRATIONS = {
     1: _MIGRATION_1,
     2: _MIGRATION_2,
@@ -859,6 +875,7 @@ _MIGRATIONS = {
     15: _MIGRATION_15,
     16: _MIGRATION_16,
     17: _MIGRATION_17,
+    18: _MIGRATION_18,
 }
 
 

@@ -48,7 +48,9 @@ SELECT s.*,
        i.indexed_at AS coverage_indexed_at,
        o.outcome, o.confidence AS outcome_confidence,
        o.evidence_json AS outcome_evidence_json,
-       o.classifier_version AS outcome_classifier_version
+       o.classifier_version AS outcome_classifier_version,
+       o.lifecycle_status AS outcome_lifecycle_status,
+       o.strongly_evidenced AS outcome_strongly_evidenced
 FROM source_sessions AS s
 LEFT JOIN usage AS u ON u.source_session_id = s.id
 LEFT JOIN event_totals AS e ON e.source_session_id = s.id
@@ -181,6 +183,8 @@ class SessionOutcomeView:
     confidence: str
     evidence: tuple[str, ...]
     classifier_version: str | None
+    lifecycle_status: str
+    strongly_evidenced: bool
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -188,7 +192,9 @@ class SessionOutcomeView:
             "confidence": self.confidence,
             "evidence": list(self.evidence),
             "classifier_version": self.classifier_version,
-            "semantics": "originated_evidence",
+            "lifecycle_status": self.lifecycle_status,
+            "strongly_evidenced": self.strongly_evidenced,
+            "semantics": "originated_task_outcome_evidence",
         }
 
 
@@ -719,6 +725,8 @@ def _outcome_view(row: sqlite3.Row) -> SessionOutcomeView:
         confidence=_optional_str(row["outcome_confidence"]) or "low",
         evidence=evidence,
         classifier_version=_optional_str(row["outcome_classifier_version"]),
+        lifecycle_status=_optional_str(row["outcome_lifecycle_status"]) or "unknown",
+        strongly_evidenced=bool(row["outcome_strongly_evidenced"]),
     )
 
 

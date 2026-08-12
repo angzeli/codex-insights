@@ -311,6 +311,11 @@ def build_dashboard_data(
         "observed_p90_tokens_per_session": usage.metrics.p90_tokens_per_session,
         "sessions_per_day": usage.metrics.sessions_per_day,
         "high_confidence_commits": commits.high_confidence_commits,
+        "strongly_evidenced_outcome_rate": (
+            outcomes.strongly_evidenced_count / outcomes.session_count
+            if outcomes.session_count
+            else None
+        ),
         "classifiable_outcome_rate": (
             outcomes.classifiable_count / outcomes.session_count
             if outcomes.session_count
@@ -384,10 +389,13 @@ def build_dashboard_data(
     outcome_payload: dict[str, object] = {
         "session_count": outcomes.session_count,
         "classifiable_count": outcomes.classifiable_count,
+        "strongly_evidenced_count": outcomes.strongly_evidenced_count,
         "unknown_count": outcomes.unknown_count,
         "outcomes": dict(outcomes.outcomes),
+        "strong_outcomes": dict(outcomes.strong_outcomes),
         "confidence": dict(outcomes.confidence),
-        "classification_semantics": "originated_evidence",
+        "lifecycle": dict(outcomes.lifecycle),
+        "classification_semantics": "originated_task_outcome_evidence",
     }
     data_quality: dict[str, object] = {
         "token_coverage": overview["token_coverage"],

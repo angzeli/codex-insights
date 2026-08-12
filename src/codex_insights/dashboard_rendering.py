@@ -134,7 +134,10 @@ def _secondary_metrics(
         ("Observed median/session", _number(overview.get("observed_median_tokens_per_session"))),
         ("Observed p90/session", _number(overview.get("observed_p90_tokens_per_session"))),
         ("Confirmed commits", _integer(overview.get("high_confidence_commits"))),
-        ("Classifiable outcomes", _fraction(overview.get("classifiable_outcome_rate"))),
+        (
+            "Strongly evidenced outcomes",
+            _fraction(overview.get("strongly_evidenced_outcome_rate")),
+        ),
         ("Child threads", _integer(quality.get("child_threads"))),
     )
     return "".join(
@@ -326,7 +329,8 @@ def _outcomes_section(outcomes: Mapping[str, object]) -> str:
         + '</div><div class="panel"><h3>Confidence</h3>'
         + _table(("Tier", "Sessions"), confidence_rows, panel=False)
         + "</div></div>"
-        + f'<div class="secondary"><span>Classifiable <strong>{_integer(outcomes.get("classifiable_count"))}</strong></span>'
+        + f'<div class="secondary"><span>Strongly evidenced <strong>{_integer(outcomes.get("strongly_evidenced_count"))}</strong></span>'
+        f'<span>Broad non-UNKNOWN <strong>{_integer(outcomes.get("classifiable_count"))}</strong></span>'
         f'<span>Unknown <strong>{_integer(outcomes.get("unknown_count"))}</strong></span></div>'
     )
     return _section(

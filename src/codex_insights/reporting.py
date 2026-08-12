@@ -297,12 +297,12 @@ def _outcomes_markdown(value: object) -> str:
     outcomes = _mapping(value)
     distribution = _mapping(outcomes.get("outcomes"))
     return _markdown_table(
-        ("Outcome", "Sessions", "Fraction of classifiable"),
+        ("Outcome", "Sessions", "Fraction of strongly evidenced"),
         tuple(
             (
                 _short(key),
                 _number(_mapping(item).get("count")),
-                _percent(_mapping(item).get("fraction_of_classifiable")),
+                _percent(_mapping(item).get("fraction_of_strongly_evidenced")),
             )
             for key, item in sorted(distribution.items())
         ),
