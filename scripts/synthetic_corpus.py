@@ -119,7 +119,7 @@ def generate_synthetic_corpus(
         started = base_time + timedelta(minutes=index * 11)
         ended = started + timedelta(minutes=3 + index % 37)
         repo_index = index % selected.repository_count
-        repository, commit_hash = repository_data[repo_index]
+        repository, commit_hash, starting_hash = repository_data[repo_index]
         model = f"synthetic-model-{index % selected.model_count}"
         archived = index % 7 == 0
         archived_count += int(archived)
@@ -191,7 +191,7 @@ def generate_synthetic_corpus(
                 "synthetic-provider",
                 int(archived),
                 "main",
-                None if index in {1, 2} else commit_hash,
+                starting_hash if index == 1 else (None if index == 2 else commit_hash),
                 f"https://example.invalid/synthetic/repo-{repo_index:02d}.git",
             )
         )
@@ -248,7 +248,7 @@ def append_changed_session_event(rollout: Path) -> None:
     os.utime(rollout, ns=(stat.st_atime_ns, stat.st_mtime_ns + 1_000_000))
 
 
-def _create_repository(path: Path, *, index: int) -> tuple[Path, str]:
+def _create_repository(path: Path, *, index: int) -> tuple[Path, str, str]:
     path.mkdir(parents=True)
     (path / "README.md").write_text(
         f"# Synthetic repository {index}\n\nNo real user content.\n",
@@ -261,17 +261,36 @@ def _create_repository(path: Path, *, index: int) -> tuple[Path, str]:
         "GIT_COMMITTER_NAME": "Synthetic Fixture",
         "GIT_COMMITTER_EMAIL": "synthetic@example.invalid",
         "GIT_AUTHOR_DATE": _timestamp(
-            datetime(2026, 1, 1, tzinfo=UTC) + timedelta(minutes=index * 11 + 2)
+            datetime(2026, 1, 1, tzinfo=UTC) + timedelta(minutes=index * 11)
         ),
         "GIT_COMMITTER_DATE": _timestamp(
-            datetime(2026, 1, 1, tzinfo=UTC) + timedelta(minutes=index * 11 + 2)
+            datetime(2026, 1, 1, tzinfo=UTC) + timedelta(minutes=index * 11)
         ),
     }
     _git(path, "init", "--quiet", "--initial-branch=main", env=environment)
     _git(path, "add", "README.md", env=environment)
     _git(path, "commit", "--quiet", "-m", f"synthetic commit {index}", env=environment)
+    starting_hash = _git(path, "rev-parse", "HEAD", env=environment).strip()
+    (path / "fixture.txt").write_text("Synthetic descendant commit.\n", encoding="utf-8")
+    descendant_time = _timestamp(
+        datetime(2026, 1, 1, tzinfo=UTC) + timedelta(minutes=index * 11 + 2)
+    )
+    descendant_environment = {
+        **environment,
+        "GIT_AUTHOR_DATE": descendant_time,
+        "GIT_COMMITTER_DATE": descendant_time,
+    }
+    _git(path, "add", "fixture.txt", env=descendant_environment)
+    _git(
+        path,
+        "commit",
+        "--quiet",
+        "-m",
+        f"synthetic descendant {index}",
+        env=descendant_environment,
+    )
     commit_hash = _git(path, "rev-parse", "HEAD", env=environment).strip()
-    return path.resolve(), commit_hash
+    return path.resolve(), commit_hash, starting_hash
 
 
 def _git(path: Path, *arguments: str, env: dict[str, str]) -> str:
