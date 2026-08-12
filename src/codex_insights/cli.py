@@ -174,6 +174,23 @@ def _render_deep_doctor(report: DeepDoctorReport) -> None:
     )
     console.print(summary)
 
+    snapshot = Table(title="Indexed snapshot", show_header=False, box=None)
+    snapshot.add_column("Diagnostic", style="bold cyan")
+    snapshot.add_column("Value", overflow="fold")
+    snapshot.add_row("Source/index status", _source_index_status(report.source_index_difference))
+    snapshot.add_row(
+        "Latest successful index",
+        report.latest_successful_index_at or "none recorded",
+    )
+    snapshot.add_row("Missing rollout references", f"{report.missing_rollout_references:,}")
+    snapshot.add_row(
+        "Compatibility warnings",
+        f"{report.compatibility_warning_count:,}",
+    )
+    snapshot.add_row("Token lineage", _diagnostic_counts(report.token_lineage))
+    snapshot.add_row("Event provenance", _diagnostic_counts(report.event_provenance))
+    console.print(snapshot)
+
     unknowns = Table(title="Top source-format diagnostics")
     unknowns.add_column("Category")
     unknowns.add_column("Shape")
@@ -245,6 +262,22 @@ def _render_deep_doctor(report: DeepDoctorReport) -> None:
         coverage.add_row("none", "0/0", "unavailable", "unavailable", "unavailable")
     console.print(coverage)
     _render_messages("Compatibility warnings", report.warnings, "yellow")
+
+
+def _source_index_status(difference: int | None) -> str:
+    if difference is None:
+        return "unavailable"
+    if difference > 0:
+        return f"Source advanced by {difference:,} session(s) since the indexed snapshot"
+    if difference < 0:
+        return f"Indexed snapshot contains {-difference:,} session(s) absent from the source"
+    return "Current with selected source catalogue"
+
+
+def _diagnostic_counts(counts: dict[str, int]) -> str:
+    if not counts:
+        return "none observed"
+    return ", ".join(f"{key}={value:,}" for key, value in sorted(counts.items()))
 
 
 @app.command("db-info")

@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 import tomllib
 from pathlib import Path
 
 import pytest
 from typer.testing import CliRunner
 
+import codex_insights.cli as cli_module
 from codex_insights import __version__
 from codex_insights.adapters import CodexLocalAdapter
 from codex_insights.cli import app
@@ -141,6 +143,8 @@ def test_doctor_deep_reports_bounded_compatibility_diagnostics(
     assert payload["selected_state_database"] == "state_7.sqlite"
     assert payload["source_session_count"] == 4
     assert payload["indexed_session_count"] == 4
+    assert payload["source_index_difference"] == 0
+    assert payload["latest_successful_index_at"] is not None
     assert payload["capability_coverage"]
     assert payload["unknown_diagnostic_counts"]
     assert payload["unknown_diagnostics"]
@@ -179,6 +183,54 @@ def test_doctor_deep_reports_bounded_compatibility_diagnostics(
     assert human.exit_code == 0
     assert "Top source-format diagnostics" in human.stdout
     assert "semantic_gap" in human.stdout
+    assert "Indexed snapshot" in human.stdout
+    assert "Current with selected source catalogue" in human.stdout
+    assert "Latest successful index" in human.stdout
+    assert "Missing rollout references" in human.stdout
+    assert "Token lineage" in human.stdout
+    assert "Event provenance" in human.stdout
+
+
+def test_doctor_deep_describes_source_advance_without_private_rows(
+    synthetic_audit_home: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database = tmp_path / "index.sqlite3"
+    index_source(
+        CodexLocalAdapter(resolve_codex_home(synthetic_audit_home)),
+        database,
+        codex_home=synthetic_audit_home,
+    )
+    with sqlite3.connect(synthetic_audit_home / "state_7.sqlite") as connection:
+        connection.execute(
+            """
+            INSERT INTO threads(
+                id, title, cwd, source, created_at, rollout_path, archived
+            ) VALUES (?, ?, '/synthetic/new', 'cli', '2026-08-12T00:00:00Z',
+                      'sessions/missing-new.jsonl', 0)
+            """,
+            ("private-synthetic-id", "PRIVATE SYNTHETIC TITLE"),
+        )
+
+    monkeypatch.setattr(cli_module.console, "width", 140)
+    result = runner.invoke(
+        app,
+        [
+            "doctor",
+            "--deep",
+            "--codex-home",
+            str(synthetic_audit_home),
+            "--db",
+            str(database),
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert "Source advanced by 1 session(s) since the indexed snapshot" in result.stdout
+    assert "Missing rollout references" in result.stdout
+    assert "private-synthetic-id" not in result.stdout
+    assert "PRIVATE SYNTHETIC TITLE" not in result.stdout
 
 
 def test_doctor_deep_rejects_derived_database_inside_codex_home(

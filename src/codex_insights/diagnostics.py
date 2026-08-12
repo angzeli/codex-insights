@@ -99,6 +99,7 @@ class DeepDoctorReport:
     token_lineage: dict[str, int]
     event_provenance: dict[str, int]
     source_index_difference: int | None
+    latest_successful_index_at: str | None
     warnings: tuple[str, ...]
 
     def to_dict(self) -> dict[str, Any]:
@@ -210,6 +211,7 @@ def run_deep_diagnostics(
         token_lineage=empty["token_lineage"],
         event_provenance=empty["event_provenance"],
         source_index_difference=source_difference,
+        latest_successful_index_at=empty["latest_successful_index_at"],
         warnings=tuple(warnings),
     )
 
@@ -237,6 +239,7 @@ def _empty_database_diagnostics() -> dict[str, Any]:
         "capabilities": (),
         "token_lineage": {},
         "event_provenance": {},
+        "latest_successful_index_at": None,
     }
 
 
@@ -378,6 +381,11 @@ def _finish_derived_diagnostics(
                 """
             ).fetchone()[0]
         )
+    if "index_runs" in tables:
+        latest = connection.execute(
+            "SELECT MAX(completed_at) FROM index_runs WHERE status = 'completed'"
+        ).fetchone()[0]
+        result["latest_successful_index_at"] = str(latest) if latest else None
     if "coverage_snapshots" in tables:
         result["capabilities"] = _capability_diagnostics(connection)
     if "token_lineage" in tables:
