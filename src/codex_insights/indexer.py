@@ -1077,7 +1077,8 @@ def _reconcile_tool_activity(
                     """
                     INSERT INTO tool_activity(
                         event_observation_id, observed_session_id, origin_session_id,
-                        source_ordinal, operation_ordinal, occurred_at, tool_family,
+                        source_ordinal, operation_ordinal, occurred_at,
+                        effective_occurred_at, tool_family,
                         tool_name, command_category, command_text, command_fingerprint,
                         executable, command_operation, test_scope, call_id_digest,
                         output_event_observation_id, exit_code, duration_seconds,
@@ -1086,7 +1087,7 @@ def _reconcile_tool_activity(
                         extraction_version, classifier_version, updated_at
                     ) VALUES (
                         ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+                        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
                     )
                     """,
                     (
@@ -1096,6 +1097,7 @@ def _reconcile_tool_activity(
                         candidate.source_ordinal,
                         candidate.operation_ordinal,
                         _format_datetime(candidate.occurred_at),
+                        _format_datetime(candidate.occurred_at or parsed.session.started_at),
                         candidate.tool_family.value,
                         candidate.tool_name,
                         candidate.command_category.value,
@@ -2077,6 +2079,14 @@ def _upsert_session_metadata(
             WHERE id = :id
             """,
             {**values, "last_ingested_at": now, "id": session_id},
+        )
+        connection.execute(
+            """
+            UPDATE tool_activity
+            SET effective_occurred_at = COALESCE(occurred_at, ?)
+            WHERE observed_session_id = ? AND occurred_at IS NULL
+            """,
+            (values["started_at"], session_id),
         )
     return session_id, False, changed
 

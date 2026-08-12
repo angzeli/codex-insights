@@ -8,7 +8,12 @@ import pytest
 from typer.testing import CliRunner
 
 from codex_insights.adapters import CodexLocalAdapter
-from codex_insights.analytics.tasks import TaskBreakdown, get_task_report
+from codex_insights.analytics.tasks import (
+    TaskBreakdown,
+    TaskFilters,
+    get_task_report,
+    get_task_reports_by_repository,
+)
 from codex_insights.cli import app
 from codex_insights.config import resolve_codex_home
 from codex_insights.indexer import index_source
@@ -101,6 +106,24 @@ def test_identical_prompts_in_independent_roots_classify_independently() -> None
 
     assert first == second
     assert first.action is TaskAction.IMPLEMENTATION
+
+
+def test_grouped_repository_task_reports_match_individual_queries(
+    analytics_database: tuple[Path, Path],
+) -> None:
+    database, codex_home = analytics_database
+
+    grouped = get_task_reports_by_repository(database, codex_home=codex_home)
+
+    assert set(grouped) == {"/repos/repo-one", "/repos/repo-two", "outside-git"}
+    for repository, report in grouped.items():
+        individual = get_task_report(
+            database,
+            codex_home=codex_home,
+            breakdown=TaskBreakdown.TYPE,
+            filters=TaskFilters(repository=repository),
+        )
+        assert report.to_dict() == individual.to_dict()
 
 
 def test_inherited_parent_intent_does_not_override_child_origin_intent(

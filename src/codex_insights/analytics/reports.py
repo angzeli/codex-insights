@@ -18,6 +18,7 @@ from codex_insights.analytics.tasks import (
     TaskFilters,
     TaskReport,
     get_task_report,
+    get_task_reports_by_repository,
 )
 from codex_insights.analytics.tools import (
     ToolFilters,
@@ -377,23 +378,18 @@ def _collect_period(
     outcome_by_repo: dict[str, Counter[str]] = {}
     for item in outcomes.sessions:
         outcome_by_repo.setdefault(item.repository, Counter())[item.outcome] += 1
+    tasks_by_repo = get_task_reports_by_repository(
+        database_path,
+        codex_home=codex_home,
+        filters=task_filters,
+    )
     repositories = tuple(
         _repository_row(
             group,
             command_by_repo=command_by_repo,
             commit_by_repo=commit_by_repo,
             outcome_by_repo=outcome_by_repo,
-            task_report=get_task_report(
-                database_path,
-                codex_home=codex_home,
-                filters=TaskFilters(
-                    since=period.start_utc,
-                    until=period.end_utc,
-                    repository=group.key,
-                    model=model,
-                ),
-                breakdown=TaskBreakdown.TYPE,
-            ),
+            task_report=tasks_by_repo.get(group.key),
         )
         for group in repository_usage.groups
     )
@@ -501,9 +497,13 @@ def _repository_row(
     command_by_repo: dict[str, int],
     commit_by_repo: Counter[str],
     outcome_by_repo: dict[str, Counter[str]],
-    task_report: TaskReport,
+    task_report: TaskReport | None,
 ) -> dict[str, object]:
-    dominant_task = task_report.groups[0].key if task_report.groups else "unknown"
+    dominant_task = (
+        task_report.groups[0].key
+        if task_report is not None and task_report.groups
+        else "unknown"
+    )
     return {
         **group.to_dict(),
         "originated_commands": command_by_repo.get(group.key, 0),

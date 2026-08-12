@@ -52,6 +52,9 @@ def test_index_schema_is_versioned_and_normalized(tmp_path: Path) -> None:
         usage_columns = {
             str(row[1]): bool(row[3]) for row in connection.execute("PRAGMA table_info(usage)")
         }
+        tool_columns = {
+            str(row[1]) for row in connection.execute("PRAGMA table_info(tool_activity)")
+        }
         views = {
             str(row[0])
             for row in connection.execute("SELECT name FROM sqlite_schema WHERE type = 'view'")
@@ -67,6 +70,7 @@ def test_index_schema_is_versioned_and_normalized(tmp_path: Path) -> None:
     assert "subagent_source_kind" in session_columns
     assert "source_parent_session_id" in session_columns
     assert usage_columns["total_tokens"] is False
+    assert "effective_occurred_at" in tool_columns
     assert {
         "source_sessions",
         "usage",
@@ -96,7 +100,93 @@ def test_index_schema_is_versioned_and_normalized(tmp_path: Path) -> None:
         "tool_activity_output_event_idx",
         "prompts_origin_event_idx",
         "prompt_observations_event_idx",
+        "source_sessions_started_at_idx",
+        "tool_activity_effective_time_idx",
+        "tool_activity_category_time_idx",
+        "git_commits_global_time_idx",
     } <= indexes
+
+
+def test_time_filtered_analytics_use_bounded_indexes(tmp_path: Path) -> None:
+    codex_home = tmp_path / "codex-home"
+    database = tmp_path / "index.sqlite3"
+    with open_index(database, codex_home=codex_home) as connection:
+        plans = {
+            "source_sessions_started_at_idx": connection.execute(
+                "EXPLAIN QUERY PLAN SELECT id FROM source_sessions "
+                "WHERE started_at >= ? ORDER BY started_at",
+                ("2026-08-01T00:00:00Z",),
+            ).fetchall(),
+            "tool_activity_effective_time_idx": connection.execute(
+                "EXPLAIN QUERY PLAN SELECT id FROM tool_activity "
+                "WHERE effective_occurred_at >= ?",
+                ("2026-08-01T00:00:00Z",),
+            ).fetchall(),
+            "tool_activity_category_time_idx": connection.execute(
+                "EXPLAIN QUERY PLAN SELECT id FROM tool_activity "
+                "WHERE command_category = ? AND effective_occurred_at >= ?",
+                ("testing", "2026-08-01T00:00:00Z"),
+            ).fetchall(),
+            "git_commits_global_time_idx": connection.execute(
+                "EXPLAIN QUERY PLAN SELECT id FROM git_commits WHERE committed_at >= ?",
+                ("2026-08-01T00:00:00Z",),
+            ).fetchall(),
+        }
+
+    for index_name, rows in plans.items():
+        detail = " ".join(str(row[3]) for row in rows)
+        assert index_name in detail
+
+
+def test_schema_20_migration_backfills_effective_tool_time(tmp_path: Path) -> None:
+    codex_home = tmp_path / "codex-home"
+    database = tmp_path / "index.sqlite3"
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            "CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)"
+        )
+        for version in range(1, 21):
+            connection.executescript(db_module._MIGRATIONS[version])
+            connection.execute(
+                "INSERT INTO schema_migrations VALUES (?, '2026-08-12T00:00:00Z')",
+                (version,),
+            )
+        connection.execute(
+            """
+            INSERT INTO source_sessions(
+                id, source_session_id, source_type, source_home, started_at, archived,
+                first_ingested_at, last_ingested_at
+            ) VALUES (1, 'legacy-tool-session', 'codex-local', ?, ?, 0, ?, ?)
+            """,
+            (
+                str(codex_home),
+                "2026-08-01T03:00:00Z",
+                "2026-08-12T00:00:00Z",
+                "2026-08-12T00:00:00Z",
+            ),
+        )
+        connection.execute(
+            """
+            INSERT INTO tool_activity(
+                id, event_observation_id, observed_session_id, origin_session_id,
+                source_ordinal, operation_ordinal, tool_family, tool_name,
+                command_category, test_scope, result_status, provenance_status,
+                redacted, truncated, extraction_version, classifier_version, updated_at
+            ) VALUES (1, 1, 1, 1, 0, 0, 'shell', 'exec_command', 'testing',
+                      'subset', 'success', 'origin', 0, 0, 'tool-v1', 'command-v1', ?)
+            """,
+            ("2026-08-12T00:00:00Z",),
+        )
+        connection.commit()
+
+    with open_index(database, codex_home=codex_home) as connection:
+        version = connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0]
+        effective_time = connection.execute(
+            "SELECT effective_occurred_at FROM tool_activity WHERE id = 1"
+        ).fetchone()[0]
+
+    assert version == SCHEMA_VERSION
+    assert effective_time == "2026-08-01T03:00:00Z"
 
 
 def test_index_database_cannot_be_created_under_codex_home(tmp_path: Path) -> None:

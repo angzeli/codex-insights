@@ -302,8 +302,12 @@ def test_indexed_tool_activity_is_lineage_aware_and_reconciles(tmp_path: Path) -
         stored_columns = {
             row[1] for row in connection.execute("PRAGMA table_info(tool_activity)")
         }
+        missing_effective_times = connection.execute(
+            "SELECT COUNT(*) FROM tool_activity WHERE effective_occurred_at IS NULL"
+        ).fetchone()[0]
     assert child_rows == [("inherited_prefix", "success"), ("origin", "failure")]
     assert "output" not in stored_columns
+    assert missing_effective_times == 0
 
     cli = runner.invoke(
         app,

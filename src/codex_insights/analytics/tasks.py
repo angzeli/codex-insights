@@ -136,6 +136,35 @@ def get_task_report(
     query, parameters = _query(selected)
     with closing(open_index(database_path, codex_home=codex_home)) as connection:
         rows = connection.execute(query, parameters).fetchall()
+    return _report_from_rows(rows, breakdown=breakdown)
+
+
+def get_task_reports_by_repository(
+    database_path: Path,
+    *,
+    codex_home: Path,
+    filters: TaskFilters | None = None,
+) -> dict[str, TaskReport]:
+    """Return per-repository task reports from one bounded analytics query."""
+
+    selected = filters or TaskFilters()
+    query, parameters = _query(selected)
+    with closing(open_index(database_path, codex_home=codex_home)) as connection:
+        rows = connection.execute(query, parameters).fetchall()
+    repository_rows: dict[str, list[sqlite3.Row]] = defaultdict(list)
+    for row in rows:
+        repository_rows[str(row["repository_key"])].append(row)
+    return {
+        key: _report_from_rows(group_rows, breakdown=TaskBreakdown.TYPE)
+        for key, group_rows in sorted(repository_rows.items())
+    }
+
+
+def _report_from_rows(
+    rows: list[sqlite3.Row],
+    *,
+    breakdown: TaskBreakdown,
+) -> TaskReport:
     grouped: dict[str, list[sqlite3.Row]] = defaultdict(list)
     if breakdown is not TaskBreakdown.SUMMARY:
         column = "action" if breakdown is TaskBreakdown.TYPE else "domain"
@@ -167,13 +196,21 @@ def _query(filters: TaskFilters) -> tuple[str, tuple[object, ...]]:
         parameters.append(_database_datetime(filters.until))
     if filters.repository:
         if filters.repository.casefold() in {"outside-git", "non-git", "none"}:
-            conditions.append("sessions.repository_id IS NULL")
+            conditions.append("sessions.repository_root IS NULL")
         else:
             conditions.append(
                 "(repositories.display_name = ? COLLATE NOCASE "
-                "OR repositories.identity_key = ? OR repositories.canonical_root = ?)"
+                "OR repositories.identity_key = ? OR repositories.canonical_root = ? "
+                "OR sessions.repository_root = ?)"
             )
-            parameters.extend((filters.repository, filters.repository, filters.repository))
+            parameters.extend(
+                (
+                    filters.repository,
+                    filters.repository,
+                    filters.repository,
+                    filters.repository,
+                )
+            )
     if filters.model:
         if filters.model.casefold() in {"unknown", "none"}:
             conditions.append("(sessions.model IS NULL OR sessions.model = '')")
@@ -223,6 +260,7 @@ def _query(filters: TaskFilters) -> tuple[str, tuple[object, ...]]:
             GROUP BY prompts.origin_session_id
         )
         SELECT sessions.id, sessions.started_at,
+               COALESCE(sessions.repository_root, 'outside-git') AS repository_key,
                COALESCE(tasks.action, 'unknown') AS action,
                COALESCE(tasks.domain, 'unknown') AS domain,
                COALESCE(tasks.confidence, 'low') AS task_confidence,

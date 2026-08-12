@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import sqlite3
-from collections import Counter, defaultdict
+from collections import defaultdict
 from contextlib import closing
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -146,56 +146,105 @@ def get_tool_activity_report(
         raise ValueError("limit must be at least 1")
     with closing(open_index(database_path, codex_home=codex_home)) as connection:
         resolved_session = _resolve_session(connection, selected.session)
-        query, parameters = _activity_query(
+        source, parameters = _activity_source(
             selected,
             resolved_session=resolved_session,
             commands_only=commands_only,
         )
-        rows = connection.execute(query, parameters).fetchall()
+        origin = _origin_condition()
+        summary = connection.execute(
+            f"""
+            SELECT COUNT(*) AS observed,
+                   COUNT(DISTINCT CASE WHEN {origin}
+                                       THEN activity.observed_session_id END) AS sessions,
+                   SUM(CASE WHEN {origin} THEN 1 ELSE 0 END) AS originated,
+                   SUM(CASE WHEN {origin} AND activity.command_fingerprint IS NOT NULL
+                            THEN 1 ELSE 0 END) AS commands,
+                   SUM(CASE WHEN {origin} AND activity.result_status != 'unknown'
+                            THEN 1 ELSE 0 END) AS known_results,
+                   SUM(CASE WHEN {origin} AND activity.result_status = 'failure'
+                            THEN 1 ELSE 0 END) AS failed_results,
+                   SUM(CASE WHEN {origin} AND activity.command_category = ?
+                            THEN 1 ELSE 0 END) AS test_invocations,
+                   SUM(CASE WHEN {origin} AND activity.command_category = ?
+                            THEN 1 ELSE 0 END) AS git_inspections,
+                   SUM(CASE WHEN {origin} AND activity.command_category = ?
+                            THEN 1 ELSE 0 END) AS patch_edits,
+                   SUM(CASE WHEN activity.provenance_status IN
+                                ('inherited_exact', 'inherited_prefix', 'observed_duplicate')
+                            THEN 1 ELSE 0 END) AS inherited,
+                   SUM(CASE WHEN activity.provenance_status = 'ambiguous'
+                            THEN 1 ELSE 0 END) AS ambiguous,
+                   SUM(CASE WHEN activity.provenance_status = 'unknown'
+                            THEN 1 ELSE 0 END) AS unknown_count
+            {source}
+            """,
+            (
+                CommandCategory.TESTING.value,
+                CommandCategory.GIT_INSPECTION.value,
+                CommandCategory.EDITING_PATCHING.value,
+                *parameters,
+            ),
+        ).fetchone()
+        if summary is None:
+            raise RuntimeError("SQLite did not return a tool activity summary")
+        tools = _group_query(
+            connection, source, parameters, expression="activity.tool_name", limit=selected.limit
+        )
+        categories = _group_query(
+            connection,
+            source,
+            parameters,
+            expression="activity.command_category",
+            limit=selected.limit,
+        )
+        executables = _group_query(
+            connection,
+            source,
+            parameters,
+            expression="activity.executable",
+            limit=selected.limit,
+            additional_condition="activity.command_fingerprint IS NOT NULL "
+            "AND activity.executable IS NOT NULL",
+        )
+        repeated_rows = []
+        if repeated:
+            query, repeated_parameters = _activity_query(
+                selected,
+                resolved_session=resolved_session,
+                commands_only=True,
+                originated_only=True,
+            )
+            repeated_rows = connection.execute(query, repeated_parameters).fetchall()
 
-    provenance_counts: Counter[str] = Counter(str(row["provenance_status"]) for row in rows)
-    origin_rows = [
-        row
-        for row in rows
-        if row["provenance_status"] == "origin"
-        and row["origin_session_id"] == row["observed_session_id"]
-    ]
-    session_count = len({int(row["observed_session_id"]) for row in origin_rows})
-    command_rows = [row for row in origin_rows if row["command_fingerprint"] is not None]
-    known_results = sum(row["result_status"] != "unknown" for row in origin_rows)
-    failed_results = sum(row["result_status"] == "failure" for row in origin_rows)
-    categories = Counter(str(row["command_category"]) for row in origin_rows)
-    tools = Counter(str(row["tool_name"]) for row in origin_rows)
-    executables = Counter(
-        str(row["executable"]) for row in command_rows if row["executable"] is not None
-    )
+    session_count = int(summary["sessions"] or 0)
+    originated_tool_calls = int(summary["originated"] or 0)
+    originated_commands = int(summary["commands"] or 0)
+    known_results = int(summary["known_results"] or 0)
+    failed_results = int(summary["failed_results"] or 0)
     return ToolActivityReport(
         session_count=session_count,
-        originated_tool_calls=len(origin_rows),
-        originated_commands=len(command_rows),
-        commands_per_session=(len(command_rows) / session_count if session_count else None),
-        test_invocations=categories[CommandCategory.TESTING.value],
-        git_inspections=categories[CommandCategory.GIT_INSPECTION.value],
-        patch_edits=categories[CommandCategory.EDITING_PATCHING.value],
+        originated_tool_calls=originated_tool_calls,
+        originated_commands=originated_commands,
+        commands_per_session=(originated_commands / session_count if session_count else None),
+        test_invocations=int(summary["test_invocations"] or 0),
+        git_inspections=int(summary["git_inspections"] or 0),
+        patch_edits=int(summary["patch_edits"] or 0),
         known_results=known_results,
         failed_results=failed_results,
         failure_rate=(failed_results / known_results if known_results else None),
         provenance=ToolProvenanceCoverage(
-            observed=len(rows),
-            originated=len(origin_rows),
-            inherited=(
-                provenance_counts["inherited_exact"]
-                + provenance_counts["inherited_prefix"]
-                + provenance_counts["observed_duplicate"]
-            ),
-            ambiguous=provenance_counts["ambiguous"],
-            unknown=provenance_counts["unknown"],
+            observed=int(summary["observed"] or 0),
+            originated=originated_tool_calls,
+            inherited=int(summary["inherited"] or 0),
+            ambiguous=int(summary["ambiguous"] or 0),
+            unknown=int(summary["unknown_count"] or 0),
         ),
-        tools=_groups(tools, selected.limit),
-        categories=_groups(categories, selected.limit),
-        executables=_groups(executables, selected.limit),
+        tools=tools,
+        categories=categories,
+        executables=executables,
         repeated_commands=(
-            _repeated_commands(command_rows, selected.limit) if repeated else ()
+            _repeated_commands(repeated_rows, selected.limit) if repeated else ()
         ),
     )
 
@@ -214,30 +263,38 @@ def originated_command_counts(
     selected = filters or ToolFilters(limit=1_000_000)
     with closing(open_index(database_path, codex_home=codex_home)) as connection:
         resolved_session = _resolve_session(connection, selected.session)
-        query, parameters = _activity_query(
+        source, parameters = _activity_source(
             selected,
             resolved_session=resolved_session,
             commands_only=True,
         )
-        rows = connection.execute(query, parameters).fetchall()
-    counts: Counter[str] = Counter()
-    for row in rows:
-        if (
-            row["provenance_status"] != "origin"
-            or row["origin_session_id"] != row["observed_session_id"]
-        ):
-            continue
-        if dimension == "repo":
-            key = str(row["repository_root"] or "outside-git")
-        elif dimension == "model":
-            key = str(row["model"] or "unknown")
-        else:
-            key = str(row["command_category"])
-        counts[key] += 1
-    return dict(sorted(counts.items()))
+        expression = {
+            "repo": "COALESCE(sessions.repository_root, 'outside-git')",
+            "model": "COALESCE(NULLIF(sessions.model, ''), 'unknown')",
+            "category": "activity.command_category",
+        }[dimension]
+        rows = connection.execute(
+            f"""
+            SELECT {expression} AS key, COUNT(*) AS activity_count
+            {source}
+            AND {_origin_condition()}
+            GROUP BY {expression}
+            ORDER BY key
+            """
+            if "WHERE" in source
+            else f"""
+            SELECT {expression} AS key, COUNT(*) AS activity_count
+            {source}
+            WHERE {_origin_condition()}
+            GROUP BY {expression}
+            ORDER BY key
+            """,
+            parameters,
+        ).fetchall()
+    return {str(row["key"]): int(row["activity_count"]) for row in rows}
 
 
-def _activity_query(
+def _activity_source(
     filters: ToolFilters,
     *,
     resolved_session: int | None,
@@ -245,7 +302,7 @@ def _activity_query(
 ) -> tuple[str, tuple[object, ...]]:
     conditions: list[str] = []
     parameters: list[object] = []
-    activity_time = "COALESCE(activity.occurred_at, sessions.started_at)"
+    activity_time = "activity.effective_occurred_at"
     if filters.since is not None:
         conditions.append(f"{activity_time} >= ?")
         parameters.append(_database_datetime(filters.since))
@@ -283,18 +340,41 @@ def _activity_query(
     where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
     return (
         f"""
-        SELECT activity.*, sessions.source_session_id, sessions.repository_root,
-               sessions.repository_name, sessions.model, sessions.model_provider,
-               sessions.started_at
         FROM tool_activity AS activity
         JOIN source_sessions AS sessions ON sessions.id = activity.observed_session_id
         LEFT JOIN session_tasks AS tasks ON tasks.session_id = sessions.id
         {where}
-        ORDER BY {activity_time} IS NULL, {activity_time},
+        """,
+        tuple(parameters),
+    )
+
+
+def _activity_query(
+    filters: ToolFilters,
+    *,
+    resolved_session: int | None,
+    commands_only: bool,
+    originated_only: bool = False,
+) -> tuple[str, tuple[object, ...]]:
+    source, parameters = _activity_source(
+        filters,
+        resolved_session=resolved_session,
+        commands_only=commands_only,
+    )
+    connector = "AND" if "WHERE" in source else "WHERE"
+    origin_filter = f"{connector} {_origin_condition()}" if originated_only else ""
+    return (
+        f"""
+        SELECT activity.*, sessions.source_session_id, sessions.repository_root,
+               sessions.repository_name, sessions.model, sessions.model_provider,
+               sessions.started_at
+        {source}
+        {origin_filter}
+        ORDER BY activity.effective_occurred_at IS NULL, activity.effective_occurred_at,
                  sessions.source_session_id, activity.source_ordinal,
                  activity.operation_ordinal
         """,
-        tuple(parameters),
+        parameters,
     )
 
 
@@ -321,10 +401,38 @@ def _resolve_session(connection: sqlite3.Connection, prefix: str | None) -> int 
     return int(rows[0]["id"])
 
 
-def _groups(counts: Counter[str], limit: int) -> tuple[ActivityGroup, ...]:
+def _origin_condition() -> str:
+    return (
+        "activity.provenance_status = 'origin' "
+        "AND activity.origin_session_id = activity.observed_session_id"
+    )
+
+
+def _group_query(
+    connection: sqlite3.Connection,
+    source: str,
+    parameters: tuple[object, ...],
+    *,
+    expression: str,
+    limit: int,
+    additional_condition: str | None = None,
+) -> tuple[ActivityGroup, ...]:
+    connector = "AND" if "WHERE" in source else "WHERE"
+    extra = f" AND {additional_condition}" if additional_condition else ""
+    rows = connection.execute(
+        f"""
+        SELECT {expression} AS key, COUNT(*) AS activity_count
+        {source}
+        {connector} {_origin_condition()}{extra}
+        GROUP BY {expression}
+        ORDER BY activity_count DESC, key
+        LIMIT ?
+        """,
+        (*parameters, limit),
+    ).fetchall()
     return tuple(
-        ActivityGroup(key=key, count=count)
-        for key, count in sorted(counts.items(), key=lambda item: (-item[1], item[0]))[:limit]
+        ActivityGroup(key=str(row["key"]), count=int(row["activity_count"]))
+        for row in rows
     )
 
 

@@ -9,7 +9,7 @@ from pathlib import Path
 
 from codex_insights.path_safety import UnsafeDestinationError, validate_write_target
 
-SCHEMA_VERSION = 20
+SCHEMA_VERSION = 21
 
 _MIGRATION_1 = """
 CREATE TABLE source_sessions (
@@ -907,6 +907,26 @@ CREATE TABLE git_reconciliation_state (
 );
 """
 
+_MIGRATION_21 = """
+ALTER TABLE tool_activity ADD COLUMN effective_occurred_at TEXT;
+
+UPDATE tool_activity
+SET effective_occurred_at = COALESCE(
+    occurred_at,
+    (SELECT started_at FROM source_sessions
+     WHERE source_sessions.id = tool_activity.observed_session_id)
+);
+
+CREATE INDEX source_sessions_started_at_idx
+    ON source_sessions(started_at, id);
+CREATE INDEX tool_activity_effective_time_idx
+    ON tool_activity(effective_occurred_at, observed_session_id);
+CREATE INDEX tool_activity_category_time_idx
+    ON tool_activity(command_category, effective_occurred_at);
+CREATE INDEX git_commits_global_time_idx
+    ON git_commits(committed_at, repository_id);
+"""
+
 _MIGRATIONS = {
     1: _MIGRATION_1,
     2: _MIGRATION_2,
@@ -928,6 +948,7 @@ _MIGRATIONS = {
     18: _MIGRATION_18,
     19: _MIGRATION_19,
     20: _MIGRATION_20,
+    21: _MIGRATION_21,
 }
 
 

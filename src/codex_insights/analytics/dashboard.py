@@ -19,7 +19,9 @@ from codex_insights.analytics.queries import SessionFilters, SessionListItem, li
 from codex_insights.analytics.tasks import (
     TaskBreakdown,
     TaskFilters,
+    TaskReport,
     get_task_report,
+    get_task_reports_by_repository,
 )
 from codex_insights.analytics.tools import (
     ToolFilters,
@@ -263,16 +265,19 @@ def build_dashboard_data(
     outcomes_by_repo: dict[str, Counter[str]] = {}
     for item in outcomes.sessions:
         outcomes_by_repo.setdefault(item.repository, Counter())[item.outcome] += 1
+    tasks_by_repo = get_task_reports_by_repository(
+        database_path,
+        codex_home=codex_home,
+        filters=task_filters,
+    )
 
     repositories = tuple(
         _repository_row(
-            database_path,
-            codex_home=codex_home,
             group=group,
-            selected=selected,
             commands=command_by_repo,
             commits=commit_by_repo,
             outcomes=outcomes_by_repo,
+            task_report=tasks_by_repo.get(group.key),
         )
         for group in repository_usage.groups
     )
@@ -451,36 +456,25 @@ def build_dashboard_data(
 
 
 def _repository_row(
-    database_path: Path,
     *,
-    codex_home: Path,
     group: UsageGroup,
-    selected: DashboardFilters,
     commands: dict[str, int],
     commits: Counter[str],
     outcomes: dict[str, Counter[str]],
+    task_report: TaskReport | None,
 ) -> dict[str, object]:
     group_dict = group.to_dict()
     key = str(group_dict["key"])
     label = str(group_dict["label"])
-    task_report = get_task_report(
-        database_path,
-        codex_home=codex_home,
-        filters=TaskFilters(
-            since=selected.since,
-            until=selected.until,
-            repository=key,
-            model=selected.model,
-            action=selected.task_action,
-            domain=selected.task_domain,
-        ),
-        breakdown=TaskBreakdown.TYPE,
-    )
     return {
         **group_dict,
         "originated_commands": commands.get(key, 0),
         "high_confidence_commits": commits[label],
-        "dominant_task": task_report.groups[0].key if task_report.groups else "unknown",
+        "dominant_task": (
+            task_report.groups[0].key
+            if task_report is not None and task_report.groups
+            else "unknown"
+        ),
         "outcomes": dict(sorted(outcomes.get(label, Counter()).items())),
     }
 
