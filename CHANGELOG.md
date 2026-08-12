@@ -11,6 +11,17 @@ All notable changes to Codex Insights are documented here.
 - add Dashboard Daily/Weekly/Overall overview controls, synchronized activity sorting by date,
   sessions, or tokens, and fixed bar-track geometry for long numeric labels.
 
+## 1.1.0 - 2026-08-12
+
+### Correctness and safety hardening
+
+- made derived-index reset fail closed if the validated database changes filesystem identity before
+  deletion, including identity-safe handling of SQLite sidecars;
+- hardened shell executable normalization so shell keywords, leading options, and ambiguous
+  compound syntax are not reported as executables;
+- preserved conservative unknown/ambiguous command identity rather than guessing, with deterministic
+  regression coverage for both failure classes.
+
 ## 1.0.0 - 2026-08-10
 
 ### Normalized analytics

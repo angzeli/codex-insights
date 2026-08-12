@@ -42,7 +42,7 @@ def test_weekly_report_uses_shared_metrics_and_reconciles_breakdowns(
     payload = report.to_dict()
 
     assert payload["schema_version"] == "codex-insights-report-v1"
-    assert payload["application_version"] == "1.0.0"
+    assert payload["application_version"] == "1.1.0"
     assert payload["period"]["start"] == "2026-08-03"
     assert payload["period"]["end"] == "2026-08-09"
     assert payload["overview"]["sessions"] == shared.metrics.session_count == 3
