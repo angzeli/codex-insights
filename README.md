@@ -5,10 +5,10 @@ undocumented local session state into a separate normalized SQLite index, then a
 questions about activity, token usage, repositories, models, prompts, tools, Git provenance,
 outcomes, and task patterns without uploading a working history.
 
-Version 1.0 is a local release candidate. It provides the complete command-line workflow, offline
-reports and dashboard, explicit privacy controls, forward-compatible source diagnostics, synthetic
-integration coverage, and guarded derived-data maintenance. It is not yet a publicly published
-release.
+Codex Insights is publicly released; published versions and release notes are available on
+[GitHub Releases](https://github.com/angzeli/codex-insights/releases). This development branch keeps
+the released `1.1.0` package version while v1.2 forensic refinements remain under
+[Unreleased](CHANGELOG.md); version changes are reserved for release preparation.
 
 ![Synthetic Codex Insights dashboard](docs/assets/dashboard-synthetic.png)
 

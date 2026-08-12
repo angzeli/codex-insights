@@ -4,12 +4,6 @@ All notable changes to Codex Insights are documented here.
 
 ## Unreleased
 
-- attribute daily and weekly token activity from nonnegative token-event increments instead of
-  assigning a resumed rollout's full cumulative lifetime total to its start date;
-- retain content-free token-event timestamps/vectors in derived schema 16 with explicit temporal
-  fallback and unattributed coverage;
-- add Dashboard Daily/Weekly/Overall overview controls, synchronized activity sorting by date,
-  sessions, or tokens, and fixed bar-track geometry for long numeric labels;
 - normalized scalar and structured Codex client sources into stable client/subagent kinds without
   persisting raw structured encodings;
 - separated turn lifecycle from task outcomes and added strongly evidenced outcome coverage;
@@ -53,6 +47,12 @@ All notable changes to Codex Insights are documented here.
 - added weekly/monthly Markdown, stable JSON, and self-contained offline HTML reports;
 - added a self-contained static dashboard with generation-time filters, shared metrics, explicit
   data quality, escaped labels, and no remote assets or private text.
+- attributed daily and weekly token activity from nonnegative token-event increments instead of
+  assigning a resumed rollout's full cumulative lifetime total to its start date;
+- retained content-free token-event timestamps/vectors in derived schema 16 with explicit temporal
+  fallback and unattributed coverage;
+- added Dashboard Daily/Weekly/Overall overview controls, synchronized activity sorting by date,
+  sessions, or tokens, and fixed bar-track geometry for long numeric labels.
 
 ### Compatibility and recovery
 
