@@ -13,7 +13,7 @@ The default path is platform-aware:
 Every database-using CLI command accepts `--db PATH`. Paths equal to or nested under the resolved
 Codex home are rejected before SQLite is opened.
 
-The current derived schema version is 16. Migrations are forward-only and apply exclusively to the
+The current derived schema version is 21. Migrations are forward-only and apply exclusively to the
 Codex Insights database.
 
 ## Entity relationships
@@ -29,6 +29,9 @@ erDiagram
         text source_session_id
         text source_type
         text client_source
+        text client_kind
+        text subagent_source_kind
+        text source_parent_session_id
         text source_home
         text started_at
         text updated_at
@@ -100,6 +103,7 @@ erDiagram
         integer id PK
         integer observed_session_id FK
         integer origin_session_id FK
+        text effective_occurred_at
         integer origin_event_id FK
         text event_family
         integer source_ordinal
@@ -180,6 +184,8 @@ erDiagram
         integer session_id PK,FK
         text outcome
         text confidence
+        text lifecycle_status
+        boolean strongly_evidenced
         text classifier_version
     }
     SESSION_TASKS {
@@ -254,6 +260,12 @@ diagnosed without retaining raw rollout records.
 separate makes source filtering useful without confusing an unstable source value with adapter
 provenance.
 
+Schema version 17 adds bounded `client_kind`, `subagent_source_kind`, and explicit
+`source_parent_session_id` fields. Scalar user-facing sources remain eligible for a bounded display
+label, while structured source encodings are normalized behind the adapter boundary and are not
+persisted as public raw JSON-like values. Unknown structured shapes fail closed for prompt
+authorship.
+
 Schema version 13 adds `source_compatibility`, `session_compatibility`,
 `session_capabilities`, `unknown_source_records`, `compatibility_warnings`, and
 `coverage_snapshots`. It also extends `ingestion_state` with current and last-successful file
@@ -282,6 +294,27 @@ Source parser version 9 forces one controlled reparse after the command classifi
 conservative shell-head resolution. This re-derives `tool_activity` executable/category metadata in
 place, without a schema migration, index reset, or source-data write; subsequent unchanged indexing
 returns to the normal size/mtime/file-identity fast path.
+
+Schema version 18 separates `session_outcomes.lifecycle_status` from task-outcome evidence and adds
+the explicit `strongly_evidenced` aggregate flag. Outcome classifier version 2 reclassifies legacy
+rows without treating a nearly universal turn-completion marker as proof of task success.
+
+Schema version 19 classifies content-free source-format observations into bounded diagnostic
+categories and records capability impact plus first/last index-run provenance. Values and raw
+payloads remain excluded.
+
+Schema version 20 adds bounded per-session Git candidate summaries and a repository ref-state
+fingerprint. Git correlation version 2 can skip stable repositories, reports omitted LOW candidates,
+and never uses the present checkout branch to upgrade historical evidence.
+
+Schema version 21 adds `tool_activity.effective_occurred_at`, backfilled from the explicit activity
+time or the observing session's start time, plus measured global time indexes for sessions, tool
+activity, command category, and Git commits. These indexes do not change metric values. They allow
+time-filtered aggregate queries to avoid expression-driven scans.
+
+Source parser versions 10 and 11 respectively introduced structured source normalization and the
+diagnostic taxonomy. Each parser change triggers a controlled reparse into this derived database;
+no source file or Codex-owned database is migrated.
 
 `usage` contains one observed aggregate row per session. `usage_semantics` distinguishes a source-reported
 `cumulative_total` from `summed_event_deltas`; `unavailable` means no trustworthy token record was
@@ -333,6 +366,10 @@ IDs are digested; result rows retain only status, exit code, duration, and exact
 where applicable. The nullable executable is the first defensibly executable command head, not a
 shell keyword, leading option, or whole-command identity. Raw stdout/stderr, patch bodies, and
 arbitrary tool results are not stored.
+`effective_occurred_at` is an indexed analytics timestamp: it uses an explicit tool-event timestamp
+when available and otherwise the documented session-start fallback. The fallback is recomputed when
+catalogue metadata changes, so time-window semantics remain equivalent to the former query-time
+`COALESCE` expression.
 
 `content_retention_state` records the prompt/command-text settings applied by the most recent index
 run. Persistent user policy itself lives in the separate platform config file, not in Codex home.
@@ -343,11 +380,15 @@ Turning storage off does not delete previous content; explicit purge behavior is
 common Git directory, then canonical repository path. `git_commits` stores read-only discovered commit
 metadata. `session_commit_associations` preserves HIGH/MEDIUM/LOW confidence, evidence type, ambiguity,
 and algorithm version; the source catalogue's initial `git_sha` is never treated as a created commit.
+`git_candidate_summaries` reports how many timing candidates were considered, retained, and omitted;
+`git_reconciliation_state` invalidates only repositories whose algorithm version or read-only ref
+state changed.
 
 `session_outcomes` stores deterministic classifications from originated validation, edit, error,
-commit, and lifecycle evidence. `session_tasks` stores deterministic action/domain/facet
-classifications from origin-thread intent and originated fallback evidence. Both retain UNKNOWN,
-confidence, matched evidence, and classifier/taxonomy versions.
+and commit evidence. Its separate lifecycle status records turn completion or abort observations;
+`strongly_evidenced` identifies non-UNKNOWN HIGH/MEDIUM outcomes. `session_tasks` stores
+deterministic action/domain/facet classifications from origin-thread intent and originated fallback
+evidence. Both retain UNKNOWN, confidence, matched evidence, and classifier/taxonomy versions.
 
 `ingestion_state` records inexpensive file identity metadata, parser/schema versions, status, and
 the last safe byte offset. Size and nanosecond mtime are the initial incremental-change signal;
@@ -375,6 +416,14 @@ source-schema-version changes also force a reparse. Unchanged files retain their
 rows byte-for-byte unless catalogue metadata changed. Reparsed sessions replace their one usage
 row, token events, category counts, and compact semantic observations transactionally, so rerunning the index
 cannot create duplicates.
+
+After ingestion, a deterministic invalidation plan propagates changed session IDs, affected
+topology branches, repositories, parser/classifier versions, and repository ref-state changes to
+the corresponding reconcilers. Unchanged outcomes, features, taxonomy, repositories, and Git
+associations are not globally rewritten. Coverage snapshots are copied from the previous successful
+run when no relevant dependency changed. Benchmark JSON records stage timings so this optimization
+remains inspectable; missed invalidation is treated as a correctness defect, not a performance
+tradeoff.
 
 Prompt extraction participates in the same parser-version invalidation. A reparsed origin session
 upserts deterministic prompt IDs, removes only derived prompt rows no longer present for that

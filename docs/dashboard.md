@@ -34,8 +34,10 @@ quality/methodology sections.
 - Median and p90 values are observed per-rollout cumulative totals.
 - Prompt counts are logical and origin-aware.
 - Tool and command counts include originated observations only.
-- Git associations keep HIGH confirmed evidence separate from MEDIUM/LOW candidates.
-- Outcome and task classifiers retain UNKNOWN and confidence coverage.
+- Git associations keep HIGH confirmed evidence separate from ancestry-qualified MEDIUM and bounded
+  LOW candidates, including omitted-candidate coverage.
+- Outcome and task classifiers retain UNKNOWN and confidence coverage; source lifecycle and
+  strongly evidenced task outcomes remain distinct.
 - Missing values remain `unknown`; they are not rendered as zero.
 
 The dashboard uses the same analytics functions as `usage`, `tasks`, `tools`, `commits`, `outcomes`,

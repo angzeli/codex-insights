@@ -20,20 +20,29 @@ has since disappeared. Non-Git sessions retain no repository identity.
 
 `threads.git_sha`, `threads.git_branch`, and `threads.git_origin_url` are treated as repository
 context captured around the session. In particular, `git_sha` is not evidence that Codex created
-that commit. It is used only to exclude an already-present contextual commit from timing candidates.
+that commit. It excludes an already-present contextual commit and, where the bounded commit graph
+contains the needed parent chain, can prove that a later candidate descends from session-time Git
+context.
 
 ## Confidence tiers
 
 - **HIGH**: an originated, successful `git commit` flow exposes an exact result hash, or an
   abbreviated result hash that resolves uniquely in the same repository.
-- **MEDIUM**: exactly one compatible commit follows an originated successful commit action, the
-  current branch matches the session branch, and no competing session overlaps the commit.
-- **LOW**: timing is compatible with an originated commit action, but branch, result, concurrency,
-  or multiplicity evidence is incomplete.
+- **MEDIUM**: exactly one compatible commit follows an originated successful commit action, is
+  provably descended from the session-captured starting SHA, and no competing session overlaps the
+  commit.
+- **LOW**: timing is compatible with an originated commit action, but result, ancestry, concurrency,
+  or multiplicity evidence is incomplete. The current checkout branch never upgrades historical
+  evidence.
 
 MEDIUM and LOW rows are candidates, never definitive attribution. Time proximity alone cannot
 produce HIGH confidence. The bounded `evidence_type` and explanation stored with every association
 make the rule inspectable.
+
+LOW candidates are capped at five per originated action and twenty per session. Aggregate reports
+include considered, persisted, omitted, and affected-session counts, so candidate explosion remains
+visible without storing hundreds of indistinguishable rows. Read-only repository ref fingerprints
+make unchanged reconciliation stable while still invalidating when local refs genuinely change.
 
 ## Provenance and concurrency
 

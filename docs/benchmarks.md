@@ -64,6 +64,26 @@ The unchanged run reported 9,953 unchanged rollouts and 47 deliberately missing 
 references; the changed run updated exactly one session. There were no failures. These values are a
 structural regression reference, not a hardware-independent service-level objective.
 
+## v1.2 A-finding implementation profile
+
+The post-refinement profile ran on Python 3.11.14/macOS with schema 21. The corpus generator now
+contains explicit start/descendant Git commits so MEDIUM evidence is ancestry-qualified. Times are
+not directly comparable to the v1 Python 3.14 reference as hardware/runtime load and generated Git
+history differ; structural counts and scaling are the acceptance evidence.
+
+| Sessions | Fresh | Unchanged | One changed | Report | Dashboard |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 1,000 | 6.985 s | 0.508 s | 0.652 s | 0.541 s | 0.892 s |
+| 5,000 | 40.426 s | 1.371 s | 1.853 s | 2.210 s | 3.886 s |
+| 10,000 | 84.802 s | 3.227 s | 4.013 s | 5.117 s | 7.513 s |
+
+At 10k, unchanged indexing was 26.3 times faster than fresh. Derived feature/taxonomy, Git,
+outcome, repository, and coverage work was effectively skipped or copied when dependencies were
+clean; source discovery remained intentionally O(N). The changed run updated exactly one rollout,
+left 9,952 valid rollouts unchanged, skipped the 47 deliberate missing references, and had zero
+failures. Report/dashboard repository task analytics use one grouped query instead of N+1 queries;
+tool aggregates run in SQL and measured time predicates use explicit indexes.
+
 ## Developer-only real smoke
 
 The optional real-history smoke is explicitly separate from tests and CI:

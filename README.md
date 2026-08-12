@@ -186,8 +186,10 @@ evidence model can attribute to that thread:
   resumed logical session can contribute on multiple dates without changing its all-time total;
 - mean, median, and p90 tokens/session describe observed per-rollout values;
 - prompts and tool/command totals use origin-aware logical/originated events;
-- Git associations retain HIGH, MEDIUM, LOW, and ambiguous evidence separately;
-- outcomes and tasks are deterministic, versioned heuristics with UNKNOWN retained.
+- Git associations retain HIGH, ancestry-qualified MEDIUM, bounded LOW, and ambiguous evidence
+  separately;
+- outcomes and tasks are deterministic, versioned heuristics with UNKNOWN retained; turn lifecycle
+  and strongly evidenced task outcomes are reported separately.
 
 Ambiguous lineage is not guessed away. Missing values remain unknown, coverage denominators are
 shown, and child-exclusive contributions stay attributed to the child's repository and model at
@@ -220,6 +222,10 @@ versions, counts unknown record shapes without storing payloads, and models capa
 the last trustworthy normalized session and marks it stale instead of replacing it with incomplete
 data. Use `doctor --deep` after a Codex update. See [source compatibility](docs/schema-compatibility.md)
 and [observed source formats](docs/source-format.md).
+
+Structured client-source variants are normalized at that boundary into stable client/subagent
+kinds; raw structured encodings are not exposed as public source labels. Deep diagnostics separate
+recognized or passthrough structure from semantic, tool-result, and lifecycle gaps.
 
 ## Privacy controls, export, backup, and reset
 

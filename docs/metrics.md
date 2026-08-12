@@ -59,8 +59,9 @@ billing, quota, or private accounting algorithms.
   result evidence. MEDIUM and LOW candidates are always reported separately.
 - **Candidate commit:** a MEDIUM- or LOW-confidence repository-local association supported by weaker
   command/lifecycle or timing evidence. It is never counted as a confirmed commit.
-- **Outcome:** a deterministic classification from originated validation, edit, error, commit, and
-  lifecycle evidence. `unknown` is retained when evidence is insufficient.
+- **Outcome:** a deterministic classification from originated validation, edit, error, and commit
+  evidence. Source lifecycle is reported separately and does not make completion synonymous with
+  success. `unknown` is retained when task evidence is insufficient.
 - **Task action:** the primary requested operation, such as implementation, review, or diagnosis.
 - **Task domain:** the subject area, such as scientific computing or software engineering. Facets
   preserve narrower topics without creating giant combined labels.
@@ -127,11 +128,13 @@ Confidence labels are subsystem-specific evidence tiers, not a single cross-prod
 - **Event and prompt provenance:** `high` requires exact stable identity or ordered replay evidence;
   `none` preserves ambiguous, unknown, or otherwise unsupported origin without guessing.
 - **Git:** HIGH requires an exact originated commit-result hash in the same normalized repository;
-  MEDIUM uses originated Git operation/lifecycle evidence without an exact result hash; LOW is a
-  conservative timing candidate. Ambiguous candidates remain labeled and are never promoted by
-  coverage goals.
+  MEDIUM requires one compatible candidate descended from the session-captured starting SHA with
+  no competing session; LOW is a bounded conservative timing candidate. Present checkout branch
+  state never upgrades historical evidence. Ambiguous and omitted candidates remain explicit and
+  are never promoted by coverage goals.
 - **Outcomes:** HIGH/MEDIUM/LOW reflects the strength and consistency of originated validation,
-  edit, error, commit, and lifecycle signals. Missing or inherited-only evidence remains `unknown`.
+  edit, error, and commit signals. `turn_completed`/`aborted` lifecycle status is separate; missing
+  or inherited-only task evidence remains `unknown`.
 - **Tasks:** HIGH/MEDIUM/LOW reflects deterministic rule coverage over origin-aware user intent and
   facets. A descendant does not inherit its parent's task solely because that prompt was replayed.
 

@@ -178,8 +178,12 @@ metadata—rather than depending on the literal name `threads` or the version `s
 Recognized source values are mapped inside the adapter:
 
 - catalogue timestamps, working directory, archive state, model/provider, Git metadata, and
-  rollout path become stable session fields; the catalogue's client source is retained separately
-  from the stable `codex-local` adapter type;
+  rollout path become stable session fields; scalar catalogue sources are normalized to bounded
+  `client_kind` values (`cli`, `editor`, `subagent`, `other`, or `unknown`) separately from the stable
+  `codex-local` adapter type;
+- known structured subagent sources may provide a bounded subagent kind and an explicit parent
+  session reference; raw structured encodings are not persisted or displayed, and malformed or
+  unknown structured shapes fail closed for interactive prompt authorship;
 - `session_meta` may fill missing working-directory, model/provider, and Codex-version metadata;
 - `total_token_usage` is interpreted as a cumulative session snapshot: the final observed snapshot
   remains the session-level total, while content-free timestamped snapshots are retained solely to
@@ -220,6 +224,11 @@ file is conservatively reparsed from byte zero; the recorded byte offset is prov
 append-only strategy, not yet a resume point. No raw-content fingerprint is calculated.
 
 The parser counts bounded unknown record/payload/field/tool shapes without storing their payloads.
+Diagnostics distinguish field passthrough and recognized-but-ignored structure from semantic,
+tool-result, lifecycle, and unclassified gaps. Each aggregate includes affected-session coverage,
+first/last observation, newly-seen status relative to successful index runs, and a bounded capability
+impact. A consumed lifecycle or tool signal is not reported as wholly unsupported merely because its
+source wrapper remains undocumented.
 It verifies file identity/size/mtime across a parse, defers repeated live mutations, and treats an
 incomplete final line as a partial append. Previous-good normalized rows are retained on failure.
 See `docs/schema-compatibility.md` for capability and recovery semantics.

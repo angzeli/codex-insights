@@ -57,8 +57,11 @@ reported, and their rows are not combined.
 ## Unknown records and semantic drift
 
 Unknown record types, payload types, field names, and tool encodings do not abort a parse. The
-derived database stores only a bounded name/category, count, parser/schema provenance, and cheap
-first/last timestamps. Arbitrary raw payloads are discarded.
+derived database stores only a bounded name/category, count, parser/schema provenance, cheap
+first/last timestamps, affected-session count, newly-seen status, and capability impact. Arbitrary
+raw payloads are discarded. Categories distinguish `field_passthrough`, `recognized_ignored`,
+`semantic_gap`, `tool_result_gap`, `lifecycle_gap`, and `unclassified` so harmless structural volume
+does not obscure actionable semantic drift.
 
 Structural compatibility is not enough. The parser warns when recognized cumulative token vectors
 decrease or violate known component/total relationships. The indexer also records unresolved spawn
@@ -88,9 +91,10 @@ version, exception type, status, and timestamp—never the failed line or payloa
 
 `codex-insights doctor --deep` performs bounded, read-only diagnostics. It reports derived DB
 integrity/schema, component versions, candidate and selected state databases, missing rollout
-references, source/index counts, stale or failed sessions, unknown-record totals, capability
-coverage/regressions, and token-lineage/event-provenance status. `--json` returns the same structured
-aggregate result. It does not trigger a re-index or migrate either source or derived databases.
+references, source/index counts, stale or failed sessions, bounded categorized source-format
+diagnostics, capability coverage/regressions, and token-lineage/event-provenance status. `--json`
+returns the same structured aggregate result. It does not trigger a re-index or migrate either
+source or derived databases.
 
 Local telemetry and compatibility diagnostics describe observed local files. They do not reproduce
 or claim equivalence to OpenAI billing, quota, or private server-side accounting.

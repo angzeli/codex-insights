@@ -9,7 +9,20 @@ All notable changes to Codex Insights are documented here.
 - retain content-free token-event timestamps/vectors in derived schema 16 with explicit temporal
   fallback and unattributed coverage;
 - add Dashboard Daily/Weekly/Overall overview controls, synchronized activity sorting by date,
-  sessions, or tokens, and fixed bar-track geometry for long numeric labels.
+  sessions, or tokens, and fixed bar-track geometry for long numeric labels;
+- normalized scalar and structured Codex client sources into stable client/subagent kinds without
+  persisting raw structured encodings;
+- separated turn lifecycle from task outcomes and added strongly evidenced outcome coverage;
+- made incremental reconciliation dependency-aware while retaining explicit stage timings and
+  unchanged-source idempotency;
+- classified source-drift observations by risk/capability with bounded first/last/newly-seen
+  diagnostics and no raw payload values;
+- stabilized Git provenance with ancestry-qualified MEDIUM evidence, bounded LOW candidates,
+  omitted-candidate coverage, and ref-state invalidation;
+- added derived-schema migrations 17-21 for source kinds, outcome/lifecycle semantics, diagnostics,
+  Git candidate state, effective tool timestamps, and measured analytics indexes;
+- aggregated tool analytics in SQL and removed per-repository task-query loops from reports and the
+  static dashboard.
 
 ## 1.1.0 - 2026-08-12
 
