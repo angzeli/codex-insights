@@ -33,6 +33,10 @@ common query and prompt-search latency, report/dashboard generation, peak proces
 supported, derived DB size, and report/dashboard sizes. It emits a human summary plus stable
 `codex-insights-benchmark-v1` JSON.
 
+Peak-memory reporting uses the POSIX `resource` interface where available and is explicitly
+`unavailable` on platforms such as Windows. Indexing, timing, query, and artifact measurements
+continue to run there.
+
 Non-binding engineering expectations are structural rather than hardware-specific:
 
 - unchanged re-indexing should be dramatically faster than fresh indexing;

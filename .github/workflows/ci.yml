@@ -95,3 +95,56 @@ jobs:
           "$RUNNER_TEMP/codex-insights-dev/bin/python" scripts/editable_install_guard.py
           "$RUNNER_TEMP/codex-insights-dev/bin/python" -c "import codex_insights"
           "$RUNNER_TEMP/codex-insights-dev/bin/codex-insights" --help
+
+  windows-installed:
+    name: Windows installed smoke (Python ${{ matrix.python-version }})
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.14"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+      - name: Build wheel
+        run: |
+          python -m pip install build
+          python -m build --wheel
+      - name: Install wheel and exercise synthetic workflow
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $PSNativeCommandUseErrorActionPreference = $true
+          $venv = Join-Path $env:RUNNER_TEMP "wheel-smoke"
+          python -m venv $venv
+          $python = Join-Path $venv "Scripts\python.exe"
+          $cli = Join-Path $venv "Scripts\codex-insights.exe"
+          $wheel = (Get-ChildItem "dist\*.whl").FullName
+          & $python -m pip install $wheel
+
+          $home = Join-Path $env:RUNNER_TEMP "synthetic-codex-home"
+          Copy-Item -Recurse "tests\fixtures\source_audit\codex_home" $home
+          & $python -c "import sqlite3,sys; from pathlib import Path; home=Path(sys.argv[1]); schema=Path(sys.argv[2]).read_text(encoding='utf-8'); connection=sqlite3.connect(home/'state_7.sqlite'); connection.executescript(schema); connection.close()" $home "tests\fixtures\source_audit\state_fixture.sql"
+
+          $database = Join-Path $env:RUNNER_TEMP "codex-insights.sqlite3"
+          & $cli version
+          & $cli doctor --codex-home $home --json
+          & $cli index --codex-home $home --db $database
+          & $cli stats --codex-home $home --db $database --json
+          & $cli usage --codex-home $home --db $database --by day --timezone UTC --json
+          & $python -c "import sys; from pathlib import Path; from codex_insights.db import open_source_sqlite_readonly; connection=open_source_sqlite_readonly(Path(sys.argv[1])); assert connection.execute('PRAGMA query_only').fetchone()[0] == 1; connection.close()" (Join-Path $home "state_7.sqlite")
+
+          $dashboard = Join-Path $env:RUNNER_TEMP "dashboard.html"
+          & $cli dashboard --codex-home $home --db $database --output $dashboard
+          & $cli dashboard --codex-home $home --db $database --output $dashboard --overwrite
+
+          $PSNativeCommandUseErrorActionPreference = $false
+          & $cli dashboard --codex-home $home --db $database --output (Join-Path $home "forbidden.html")
+          if ($LASTEXITCODE -eq 0) { throw "source-home output guard did not reject the path" }
+          if (Test-Path (Join-Path $home "forbidden.html")) { throw "guarded output was created" }
+          $PSNativeCommandUseErrorActionPreference = $true
+
+          & $python scripts/benchmark.py --sessions 5 --repositories 1 --models 1

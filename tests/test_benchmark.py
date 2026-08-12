@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from scripts import benchmark as benchmark_module
 from scripts.benchmark import BenchmarkConfig, render_summary, run_benchmark
 
 
@@ -39,3 +40,30 @@ def test_small_benchmark_exercises_fresh_unchanged_and_changed_paths(
     assert artifacts["database_bytes"] > 0
     assert artifacts["dashboard_html_bytes"] < 500_000
     assert "fresh index" in render_summary(result)
+
+
+def test_benchmark_memory_is_explicitly_unavailable_without_posix_resource() -> None:
+    original = benchmark_module._RESOURCE_MODULE
+    try:
+        benchmark_module._RESOURCE_MODULE = None
+        assert benchmark_module._peak_memory_mib() is None
+    finally:
+        benchmark_module._RESOURCE_MODULE = original
+
+    summary = render_summary(
+        {
+            "dataset": {"session_count": 1, "rollout_count": 1},
+            "timings_seconds": {
+                "fresh_index": 1.0,
+                "unchanged_index": 0.5,
+                "changed_session_index": 0.6,
+                "report_generation": 0.1,
+                "dashboard_generation": 0.1,
+                "queries": {"stats": 0.01},
+            },
+            "artifacts": {"database_bytes": 1, "dashboard_html_bytes": 1},
+            "ratios": {"fresh_to_unchanged_speedup": 2.0},
+            "peak_memory_mib": None,
+        }
+    )
+    assert "peak memory:       unavailable" in summary

@@ -5,13 +5,13 @@ from __future__ import annotations
 import argparse
 import json
 import platform
-import resource
 import tempfile
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from pathlib import Path
+from types import ModuleType
 from typing import Any, TypeVar
 
 from codex_insights import __version__
@@ -45,6 +45,12 @@ else:
         append_changed_session_event,
         generate_synthetic_corpus,
     )
+
+_RESOURCE_MODULE: ModuleType | None
+try:
+    import resource as _RESOURCE_MODULE
+except ImportError:  # pragma: no cover - exercised by the Windows CI smoke
+    _RESOURCE_MODULE = None
 
 T = TypeVar("T")
 
@@ -232,7 +238,7 @@ def render_summary(result: dict[str, object]) -> str:
             f"  query max:         {max(float(value) for value in queries.values()):.3f}s",
             f"  report:            {float(timings['report_generation']):.3f}s",
             f"  dashboard:         {float(timings['dashboard_generation']):.3f}s",
-            f"  peak memory:       {float(result['peak_memory_mib']):.1f} MiB",
+            f"  peak memory:       {_optional_memory(result['peak_memory_mib'])}",
             f"  database:          {int(artifacts['database_bytes']) / 1_048_576:.2f} MiB",
             f"  dashboard HTML:    {int(artifacts['dashboard_html_bytes']) / 1024:.1f} KiB",
         )
@@ -245,8 +251,12 @@ def _measure(function: Callable[[], T]) -> tuple[float, T]:
     return time.perf_counter() - started, value
 
 
-def _peak_memory_mib() -> float:
-    maximum = float(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss)
+def _peak_memory_mib() -> float | None:
+    if _RESOURCE_MODULE is None:
+        return None
+    maximum = float(
+        _RESOURCE_MODULE.getrusage(_RESOURCE_MODULE.RUSAGE_SELF).ru_maxrss
+    )
     return maximum / 1_048_576 if platform.system() == "Darwin" else maximum / 1024
 
 
@@ -258,6 +268,10 @@ def _dict(value: object) -> dict[str, Any]:
 
 def _optional_decimal(value: object) -> str:
     return f"{float(value):.1f}" if isinstance(value, (int, float)) else "unknown"
+
+
+def _optional_memory(value: object) -> str:
+    return f"{float(value):.1f} MiB" if isinstance(value, (int, float)) else "unavailable"
 
 
 def _index_counts(report: IndexReport) -> dict[str, int]:
