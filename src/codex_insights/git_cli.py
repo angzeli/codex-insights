@@ -80,6 +80,8 @@ def commits_command(
     summary.add_row("MEDIUM candidates", f"{report.medium:,}")
     summary.add_row("LOW candidates", f"{report.low:,}")
     summary.add_row("Ambiguous", f"{report.ambiguous:,}")
+    summary.add_row("Timing candidates considered", f"{report.timing_candidates_considered:,}")
+    summary.add_row("Timing candidates omitted", f"{report.timing_candidates_omitted:,}")
     summary.add_row("Resolved repositories", f"{report.repositories_resolved:,}")
     ratio = (
         f"{report.reconciled_tokens_per_confirmed_commit:,.0f}"

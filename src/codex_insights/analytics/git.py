@@ -81,6 +81,10 @@ class CommitReport:
     reconciled_tokens_for_high_sessions: int | None
     high_sessions_with_token_data: int
     reconciled_tokens_per_confirmed_commit: float | None
+    timing_candidates_considered: int
+    timing_candidates_persisted: int
+    timing_candidates_omitted: int
+    sessions_with_omitted_candidates: int
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -97,6 +101,10 @@ class CommitReport:
             "reconciled_tokens_per_confirmed_commit": (
                 self.reconciled_tokens_per_confirmed_commit
             ),
+            "timing_candidates_considered": self.timing_candidates_considered,
+            "timing_candidates_persisted": self.timing_candidates_persisted,
+            "timing_candidates_omitted": self.timing_candidates_omitted,
+            "sessions_with_omitted_candidates": self.sessions_with_omitted_candidates,
             "ratio_semantics": "descriptive_reconciled_tokens_per_high_confidence_commit",
         }
 
@@ -135,6 +143,14 @@ def get_commit_report(
             if row["confidence"] == "high"
             and row["aggregate_total_tokens"] is not None
         }
+        candidate_summaries = {
+            int(row["session_internal_id"]): (
+                int(row["timing_candidates_considered"] or 0),
+                int(row["timing_candidates_persisted"] or 0),
+                int(row["timing_candidates_omitted"] or 0),
+            )
+            for row in rows
+        }
     total_tokens = sum(unique_token_values.values()) if unique_token_values else None
     return CommitReport(
         associations=tuple(_association_item(row) for row in rows[: selected.limit]),
@@ -151,6 +167,12 @@ def get_commit_report(
             total_tokens / len(high_commits)
             if total_tokens is not None and high_commits
             else None
+        ),
+        timing_candidates_considered=sum(item[0] for item in candidate_summaries.values()),
+        timing_candidates_persisted=sum(item[1] for item in candidate_summaries.values()),
+        timing_candidates_omitted=sum(item[2] for item in candidate_summaries.values()),
+        sessions_with_omitted_candidates=sum(
+            item[2] > 0 for item in candidate_summaries.values()
         ),
     )
 
@@ -234,11 +256,15 @@ SELECT commits.commit_hash, commits.committed_at,
        sessions.id AS session_internal_id, sessions.source_session_id,
        sessions.model, associations.confidence, associations.evidence_type,
        associations.evidence_explanation, associations.ambiguous,
+       summaries.timing_candidates_considered,
+       summaries.timing_candidates_persisted,
+       summaries.timing_candidates_omitted,
        usage.aggregate_total_tokens
 FROM session_commit_associations AS associations
 JOIN git_commits AS commits ON commits.id = associations.commit_id
 JOIN repositories AS repositories ON repositories.id = commits.repository_id
 JOIN source_sessions AS sessions ON sessions.id = associations.session_id
+LEFT JOIN git_candidate_summaries AS summaries ON summaries.session_id = sessions.id
 LEFT JOIN accounted_usage AS usage ON usage.source_session_id = sessions.id
 LEFT JOIN session_tasks AS tasks ON tasks.session_id = sessions.id
 """

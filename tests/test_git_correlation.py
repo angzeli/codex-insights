@@ -166,6 +166,88 @@ def test_two_concurrent_sessions_keep_timing_only_commit_candidates_low(
     assert len(limited.associations) == 1
 
 
+def test_medium_candidate_uses_captured_starting_sha_not_current_branch(
+    tmp_path: Path,
+) -> None:
+    repository = tmp_path / "repository"
+    initial_hash = _initialize_repository(repository)
+    _create_commit(
+        repository,
+        name="candidate.txt",
+        content="candidate\n",
+        message="candidate",
+        timestamp="2026-08-01T00:10:00+00:00",
+    )
+    codex_home = tmp_path / "codex-home"
+    sessions = codex_home / "sessions"
+    sessions.mkdir(parents=True)
+    rollout = sessions / "only.jsonl"
+    _write_records(rollout, _commit_records(None, "2026-08-01T00:09:00Z"))
+    _write_single_state(codex_home, repository, initial_hash)
+    database = tmp_path / "analytics.sqlite3"
+    adapter = CodexLocalAdapter(resolve_codex_home(codex_home))
+
+    index_source(adapter, database, codex_home=codex_home)
+    before = get_commit_report(database, codex_home=codex_home)
+    _git(repository, "switch", "-c", "later-checkout-state")
+    with rollout.open("a", encoding="utf-8") as handle:
+        handle.write('{"type":"event_msg","payload":{"type":"task_complete"}}\n')
+    index_source(adapter, database, codex_home=codex_home)
+    after = get_commit_report(database, codex_home=codex_home)
+
+    assert before.medium == 1
+    assert before.timing_candidates_considered == 1
+    assert before.timing_candidates_persisted == 1
+    assert before.timing_candidates_omitted == 0
+    assert after.medium == 1
+    assert before.associations[0].commit_hash == after.associations[0].commit_hash
+    assert before.associations[0].evidence_type == (
+        "unique_compatible_commit_after_originated_action"
+    )
+
+
+def test_large_timing_window_is_bounded_and_reports_omitted_candidates(
+    tmp_path: Path,
+) -> None:
+    repository = tmp_path / "repository"
+    initial_hash = _initialize_repository(repository)
+    for index in range(30):
+        _create_commit(
+            repository,
+            name=f"candidate-{index}.txt",
+            content=f"candidate {index}\n",
+            message=f"candidate {index}",
+            timestamp=f"2026-08-01T00:{index + 2:02d}:00+00:00",
+        )
+    codex_home = tmp_path / "codex-home"
+    sessions = codex_home / "sessions"
+    sessions.mkdir(parents=True)
+    _write_records(
+        sessions / "only.jsonl",
+        _commit_records(None, "2026-08-01T00:01:00Z"),
+    )
+    _write_single_state(
+        codex_home,
+        repository,
+        initial_hash,
+        updated_at="2026-08-01T00:40:00Z",
+    )
+    database = tmp_path / "analytics.sqlite3"
+
+    index_source(
+        CodexLocalAdapter(resolve_codex_home(codex_home)),
+        database,
+        codex_home=codex_home,
+    )
+    report = get_commit_report(database, codex_home=codex_home)
+
+    assert report.low == 5
+    assert report.timing_candidates_considered == 30
+    assert report.timing_candidates_persisted == 5
+    assert report.timing_candidates_omitted == 25
+    assert report.sessions_with_omitted_candidates == 1
+
+
 def _initialize_repository(repository: Path) -> str:
     repository.mkdir()
     _git(repository, "init", "-b", "main")
@@ -286,6 +368,38 @@ def _write_state(
                 INSERT INTO thread_spawn_edges VALUES ('parent', 'child', 'closed');
                 """
             )
+
+
+def _write_single_state(
+    codex_home: Path,
+    repository: Path,
+    initial_hash: str,
+    *,
+    updated_at: str = "2026-08-01T00:20:00Z",
+) -> None:
+    with sqlite3.connect(codex_home / "state_9.sqlite") as connection:
+        connection.execute(
+            """
+            CREATE TABLE threads (
+                id TEXT PRIMARY KEY, rollout_path TEXT, created_at TEXT, updated_at TEXT,
+                archived_at TEXT, source TEXT, cwd TEXT, git_branch TEXT, git_sha TEXT
+            )
+            """
+        )
+        connection.execute(
+            "INSERT INTO threads VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                "only",
+                "sessions/only.jsonl",
+                "2026-08-01T00:00:00Z",
+                updated_at,
+                updated_at,
+                "vscode",
+                str(repository),
+                "main",
+                initial_hash,
+            ),
+        )
 
 
 def _write_records(path: Path, records: tuple[dict[str, object], ...]) -> None:

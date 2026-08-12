@@ -14,7 +14,11 @@ from typing import Any, Protocol, cast
 
 from codex_insights.adapters.base import SourceChangedDuringParseError
 from codex_insights.db import open_index
-from codex_insights.git_correlation import reconcile_git_commits
+from codex_insights.git_correlation import (
+    GIT_CORRELATION_VERSION,
+    reconcile_git_commits,
+    repository_ref_state,
+)
 from codex_insights.lineage import (
     LINEAGE_ALGORITHM_VERSION,
     analyze_thread_topology,
@@ -187,6 +191,9 @@ def index_source(
             )
             version_dirty_ids = _version_dirty_session_ids(connection)
             dirty_session_ids.update(version_dirty_ids)
+            affected_repository_ids.update(
+                _git_version_dirty_repository_ids(connection)
+            )
             if affected_repository_ids:
                 dirty_session_ids.update(
                     _session_ids_for_repositories(connection, affected_repository_ids)
@@ -565,6 +572,27 @@ def _session_ids_for_repositories(
             tuple(sorted(repository_ids)),
         )
     }
+
+
+def _git_version_dirty_repository_ids(connection: sqlite3.Connection) -> set[int]:
+    dirty: set[int] = set()
+    for row in connection.execute(
+        """
+        SELECT repositories.id, repositories.canonical_root,
+               state.algorithm_version, state.ref_state_fingerprint
+        FROM repositories
+        LEFT JOIN git_reconciliation_state AS state
+          ON state.repository_id = repositories.id
+        WHERE repositories.canonical_root IS NOT NULL
+        """
+    ):
+        root = Path(str(row["canonical_root"])) if row["canonical_root"] else None
+        if (
+            row["algorithm_version"] != GIT_CORRELATION_VERSION
+            or row["ref_state_fingerprint"] != repository_ref_state(root)
+        ):
+            dirty.add(int(row["id"]))
+    return dirty
 
 
 def _discover_relationships(

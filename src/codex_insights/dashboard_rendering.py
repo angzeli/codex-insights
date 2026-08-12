@@ -352,6 +352,7 @@ def _git_section(git: Mapping[str, object]) -> str:
         "Only HIGH is confirmed; MEDIUM and LOW remain candidates.",
         _table(("Confidence", "Associations"), rows)
         + f'<div class="secondary"><span>Confirmed commits <strong>{_integer(git.get("high_confidence_commits"))}</strong></span>'
+        f'<span>Timing candidates omitted <strong>{_integer(git.get("timing_candidates_omitted"))}</strong></span>'
         f'<span>Sessions with confirmed commits <strong>{_integer(git.get("sessions_with_high_confidence_commits"))}</strong></span>'
         f'<span>Resolved repositories <strong>{_integer(git.get("repositories_resolved"))}</strong></span></div>',
     )

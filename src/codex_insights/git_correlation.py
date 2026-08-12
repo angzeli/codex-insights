@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import re
 import shlex
 import sqlite3
@@ -11,7 +12,9 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-GIT_CORRELATION_VERSION = "git-correlation-v1"
+GIT_CORRELATION_VERSION = "git-correlation-v2"
+MAX_LOW_CANDIDATES_PER_ACTION = 5
+MAX_LOW_CANDIDATES_PER_SESSION = 20
 _COMMIT_HASH = re.compile(r"^[0-9a-f]{40,64}$")
 _CONFIDENCE_RANK = {"low": 1, "medium": 2, "high": 3}
 
@@ -23,6 +26,7 @@ class GitCommitRecord:
     commit_hash: str
     committed_at: datetime
     parent_count: int
+    parent_hashes: tuple[str, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -34,6 +38,13 @@ class CommitAssociation:
     evidence_type: str
     explanation: str
     ambiguous: bool
+
+
+@dataclass(frozen=True, slots=True)
+class CandidateSummary:
+    considered: int
+    persisted: int
+    omitted: int
 
 
 def reconcile_git_commits(
@@ -70,23 +81,23 @@ def reconcile_git_commits(
         ).fetchall()
         bounds = _repository_bounds(sessions)
         if not root.is_dir() or bounds is None:
+            _record_reconciliation_state(connection, repository_id, root)
             continue
         commits, warning = _read_git_commits(root, *bounds)
         if warning is not None:
             warnings.append(warning)
             continue
-        current_branch = _current_branch(root)
         commit_ids = _upsert_commits(connection, repository_id, commits)
         desired: set[tuple[int, int]] = set()
         for session in sessions:
-            associations = _session_associations(
+            associations, summary = _session_associations(
                 connection,
                 session=session,
                 sessions=sessions,
                 commits=commits,
-                current_branch=current_branch,
             )
             with connection:
+                _upsert_candidate_summary(connection, int(session["id"]), summary)
                 for association in associations:
                     commit_id = commit_ids.get(association.commit.commit_hash)
                     if commit_id is None:
@@ -100,6 +111,7 @@ def reconcile_git_commits(
                         association=association,
                     )
         _delete_stale_associations(connection, repository_id, desired)
+        _record_reconciliation_state(connection, repository_id, root)
     return tuple(warnings)
 
 
@@ -122,8 +134,7 @@ def _session_associations(
     session: sqlite3.Row,
     sessions: list[sqlite3.Row],
     commits: tuple[GitCommitRecord, ...],
-    current_branch: str | None,
-) -> tuple[CommitAssociation, ...]:
+) -> tuple[tuple[CommitAssociation, ...], CandidateSummary]:
     session_id = int(session["id"])
     actions = [
         row
@@ -145,6 +156,7 @@ def _session_associations(
         )
     ]
     selected: dict[str, CommitAssociation] = {}
+    considered = 0
     for action in actions:
         exact = _exact_result_commit(action, commits)
         if exact is not None and action["result_status"] == "success":
@@ -176,20 +188,35 @@ def _session_associations(
             commit
             for commit in commits
             if action_time <= commit.committed_at <= session_end + timedelta(minutes=10)
-            and commit.commit_hash != session["git_sha"]
+            and not _matches_hash(commit.commit_hash, session["git_sha"])
         )
-        for commit in candidates:
-            concurrent = _has_competing_session(session_id, sessions, commit.committed_at)
-            branch_matches = bool(
-                session["git_branch"]
-                and current_branch
-                and str(session["git_branch"]) == current_branch
+        considered += len(candidates)
+        unique_ancestry_candidate = (
+            candidates[0]
+            if len(candidates) == 1
+            and _descends_from(candidates[0], session["git_sha"], commits)
+            else None
+        )
+        selected_candidates = (
+            candidates
+            if unique_ancestry_candidate is not None
+            else tuple(
+                sorted(
+                    candidates,
+                    key=lambda item: (
+                        abs((item.committed_at - action_time).total_seconds()),
+                        item.committed_at,
+                        item.commit_hash,
+                    ),
+                )[:MAX_LOW_CANDIDATES_PER_ACTION]
             )
+        )
+        for commit in selected_candidates:
+            concurrent = _has_competing_session(session_id, sessions, commit.committed_at)
             medium = (
-                len(candidates) == 1
+                commit is unique_ancestry_candidate
                 and action["result_status"] == "success"
                 and not concurrent
-                and branch_matches
             )
             _prefer(
                 selected,
@@ -203,7 +230,8 @@ def _session_associations(
                     ),
                     explanation=(
                         "One compatible commit followed an originated successful commit action "
-                        "with matching current branch and no competing session."
+                        "and is descended from the session-captured starting Git SHA, with no "
+                        "competing session."
                         if medium
                         else "Commit timing is compatible with an originated commit action, but "
                         "the available evidence is incomplete or ambiguous."
@@ -211,11 +239,20 @@ def _session_associations(
                     ambiguous=not medium,
                 ),
             )
-    return tuple(
+    ordered = tuple(
         sorted(
             selected.values(),
             key=lambda item: (item.commit.committed_at, item.commit.commit_hash),
         )
+    )
+    strong = tuple(item for item in ordered if item.confidence != "low")
+    low = tuple(item for item in ordered if item.confidence == "low")
+    persisted = strong + low[:MAX_LOW_CANDIDATES_PER_SESSION]
+    persisted_timing = sum(item.confidence in {"low", "medium"} for item in persisted)
+    return persisted, CandidateSummary(
+        considered=considered,
+        persisted=persisted_timing,
+        omitted=max(considered - persisted_timing, 0),
     )
 
 
@@ -231,6 +268,40 @@ def _exact_result_commit(
         return None
     matches = tuple(commit for commit in commits if commit.commit_hash.startswith(prefix))
     return matches[0] if len(matches) == 1 else None
+
+
+def _matches_hash(commit_hash: str, contextual_hash: object) -> bool:
+    return bool(
+        isinstance(contextual_hash, str)
+        and len(contextual_hash) >= 7
+        and commit_hash.startswith(contextual_hash.casefold())
+    )
+
+
+def _descends_from(
+    candidate: GitCommitRecord,
+    contextual_hash: object,
+    commits: tuple[GitCommitRecord, ...],
+) -> bool:
+    """Use the bounded commit graph to prove ancestry from session-captured context."""
+
+    if not isinstance(contextual_hash, str) or len(contextual_hash) < 7:
+        return False
+    starting = contextual_hash.casefold()
+    by_hash = {item.commit_hash: item for item in commits}
+    pending = list(candidate.parent_hashes)
+    visited: set[str] = set()
+    while pending:
+        commit_hash = pending.pop()
+        if commit_hash in visited:
+            continue
+        visited.add(commit_hash)
+        if commit_hash.startswith(starting):
+            return True
+        parent = by_hash.get(commit_hash)
+        if parent is not None:
+            pending.extend(parent.parent_hashes)
+    return False
 
 
 def _prefer(selected: dict[str, CommitAssociation], candidate: CommitAssociation) -> None:
@@ -319,24 +390,15 @@ def _read_git_commits(
                 commit_hash=parts[0].casefold(),
                 committed_at=timestamp,
                 parent_count=len(parts[2].split()) if parts[2] else 0,
+                parent_hashes=tuple(
+                    parent.casefold()
+                    for parent in parts[2].split()
+                    if _COMMIT_HASH.fullmatch(parent)
+                ),
             )
         )
     commits.sort(key=lambda item: (item.committed_at, item.commit_hash))
     return tuple(commits), None
-
-
-def _current_branch(root: Path) -> str | None:
-    try:
-        result = subprocess.run(
-            ["git", "-C", str(root), "symbolic-ref", "--short", "-q", "HEAD"],
-            capture_output=True,
-            check=False,
-            text=True,
-            timeout=5,
-        )
-    except (OSError, subprocess.TimeoutExpired):
-        return None
-    return result.stdout.strip() if result.returncode == 0 and result.stdout.strip() else None
 
 
 def _upsert_commits(
@@ -382,6 +444,87 @@ def _upsert_commits(
             (repository_id,),
         )
     }
+
+
+def _upsert_candidate_summary(
+    connection: sqlite3.Connection,
+    session_id: int,
+    summary: CandidateSummary,
+) -> None:
+    values = (
+        summary.considered,
+        summary.persisted,
+        summary.omitted,
+        GIT_CORRELATION_VERSION,
+    )
+    existing = connection.execute(
+        "SELECT timing_candidates_considered, timing_candidates_persisted, "
+        "timing_candidates_omitted, algorithm_version "
+        "FROM git_candidate_summaries WHERE session_id = ?",
+        (session_id,),
+    ).fetchone()
+    if existing is not None and tuple(existing) == values:
+        return
+    connection.execute(
+        """
+        INSERT INTO git_candidate_summaries(
+            session_id, timing_candidates_considered, timing_candidates_persisted,
+            timing_candidates_omitted, algorithm_version, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?)
+        ON CONFLICT(session_id) DO UPDATE SET
+            timing_candidates_considered = excluded.timing_candidates_considered,
+            timing_candidates_persisted = excluded.timing_candidates_persisted,
+            timing_candidates_omitted = excluded.timing_candidates_omitted,
+            algorithm_version = excluded.algorithm_version,
+            updated_at = excluded.updated_at
+        """,
+        (session_id, *values, _format_datetime(datetime.now(tz=UTC))),
+    )
+
+
+def _record_reconciliation_state(
+    connection: sqlite3.Connection,
+    repository_id: int,
+    root: Path,
+) -> None:
+    with connection:
+        connection.execute(
+            """
+            INSERT INTO git_reconciliation_state(
+                repository_id, algorithm_version, ref_state_fingerprint, reconciled_at
+            ) VALUES (?, ?, ?, ?)
+            ON CONFLICT(repository_id) DO UPDATE SET
+                algorithm_version = excluded.algorithm_version,
+                ref_state_fingerprint = excluded.ref_state_fingerprint,
+                reconciled_at = excluded.reconciled_at
+            """,
+            (
+                repository_id,
+                GIT_CORRELATION_VERSION,
+                repository_ref_state(root),
+                _format_datetime(datetime.now(tz=UTC)),
+            ),
+        )
+
+
+def repository_ref_state(root: Path | None) -> str:
+    """Return a content-free fingerprint of current refs for invalidation only."""
+
+    if root is None or not root.is_dir():
+        return "unavailable"
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(root), "show-ref", "--head"],
+            capture_output=True,
+            check=False,
+            text=True,
+            timeout=5,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return "unavailable"
+    if result.returncode not in {0, 1}:
+        return "unavailable"
+    return hashlib.sha256(result.stdout.encode()).hexdigest()
 
 
 def _upsert_association(

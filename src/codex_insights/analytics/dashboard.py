@@ -378,6 +378,10 @@ def build_dashboard_data(
         "medium": commits.medium,
         "low": commits.low,
         "ambiguous": commits.ambiguous,
+        "timing_candidates_considered": commits.timing_candidates_considered,
+        "timing_candidates_persisted": commits.timing_candidates_persisted,
+        "timing_candidates_omitted": commits.timing_candidates_omitted,
+        "sessions_with_omitted_candidates": commits.sessions_with_omitted_candidates,
         "repositories_resolved": commits.repositories_resolved,
         "sessions_with_high_confidence_commits": (
             commits.sessions_with_high_confidence_commits
@@ -420,6 +424,7 @@ def build_dashboard_data(
             "sessions_with_high_confidence_commits": (
                 commits.sessions_with_high_confidence_commits
             ),
+            "timing_candidates_omitted": commits.timing_candidates_omitted,
         },
         "unknown_outcomes": outcomes.unknown_count,
         "unknown_tasks": task_summary.metrics.unknown_task_count,

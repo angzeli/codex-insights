@@ -9,7 +9,7 @@ from pathlib import Path
 
 from codex_insights.path_safety import UnsafeDestinationError, validate_write_target
 
-SCHEMA_VERSION = 19
+SCHEMA_VERSION = 20
 
 _MIGRATION_1 = """
 CREATE TABLE source_sessions (
@@ -889,6 +889,24 @@ CREATE INDEX unknown_source_records_first_run_idx
     ON unknown_source_records(first_index_run_id);
 """
 
+_MIGRATION_20 = """
+CREATE TABLE git_candidate_summaries (
+    session_id INTEGER PRIMARY KEY REFERENCES source_sessions(id) ON DELETE CASCADE,
+    timing_candidates_considered INTEGER NOT NULL CHECK (timing_candidates_considered >= 0),
+    timing_candidates_persisted INTEGER NOT NULL CHECK (timing_candidates_persisted >= 0),
+    timing_candidates_omitted INTEGER NOT NULL CHECK (timing_candidates_omitted >= 0),
+    algorithm_version TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE TABLE git_reconciliation_state (
+    repository_id INTEGER PRIMARY KEY REFERENCES repositories(id) ON DELETE CASCADE,
+    algorithm_version TEXT NOT NULL,
+    ref_state_fingerprint TEXT NOT NULL,
+    reconciled_at TEXT NOT NULL
+);
+"""
+
 _MIGRATIONS = {
     1: _MIGRATION_1,
     2: _MIGRATION_2,
@@ -909,6 +927,7 @@ _MIGRATIONS = {
     17: _MIGRATION_17,
     18: _MIGRATION_18,
     19: _MIGRATION_19,
+    20: _MIGRATION_20,
 }
 
 
