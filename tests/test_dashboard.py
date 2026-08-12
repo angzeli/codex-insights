@@ -120,6 +120,16 @@ def test_dashboard_html_is_offline_content_free_and_escapes_hostile_metadata(
     assert rendered.count("Reconciled tokens by event day") == 3
     assert "grid-template-columns: minmax(8rem, 10rem) minmax(12rem, 1fr) 9rem" in rendered
     assert "width: 9rem" in rendered
+    assert rendered.count('role="radiogroup"') == 2
+    assert rendered.count('class="control-input"') == 6
+    assert "#overview-daily:focus-visible ~ .controls" in rendered
+    assert "#sort-tokens:focus-visible ~ .controls" in rendered
+    assert "min-height: 44px" in rendered
+    assert rendered.count("<table>") == rendered.count('<caption class="sr-only">')
+    assert rendered.count("<table>") > 0
+    assert "<th>" not in rendered
+    assert '<th scope="col">' in rendered
+    assert '<caption class="sr-only">Repository activity</caption>' in rendered
 
 
 def test_empty_dashboard_and_cli_write_guards(tmp_path: Path) -> None:

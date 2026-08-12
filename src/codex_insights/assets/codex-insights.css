@@ -36,12 +36,12 @@
     --ci-text: #292d2f;
     --ci-text-cool: #263746;
     --ci-muted: #686967;
-    --ci-muted-cool: #62717a;
+    --ci-muted-cool: #53636d;
     --ci-line: #c9c2b8;
     --ci-line-soft: rgba(187, 178, 166, 0.72);
     --ci-rule-strong: rgba(38, 55, 70, 0.58);
-    --ci-accent: #b96f45;
-    --ci-accent-soft: #a65f3c;
+    --ci-accent: #8f4f2f;
+    --ci-accent-soft: #88472c;
     --ci-analytical: #456f91;
     --ci-good: #357a59;
     --ci-warn: #936711;
@@ -195,21 +195,30 @@ th,
 
 .control-input {
   position: absolute;
-  opacity: 0;
-  pointer-events: none;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  border: 0;
+  white-space: nowrap;
 }
 
 .controls {
   display: flex;
   flex-wrap: wrap;
-  align-items: baseline;
+  align-items: center;
   gap: 15px;
   margin: 0 0 16px;
   border-bottom: 1px solid var(--ci-line-soft);
 }
 
 .control-label {
-  padding: 7px 1px 8px;
+  display: inline-flex;
+  min-height: 44px;
+  padding: 7px 4px 8px;
+  align-items: center;
   border: 0;
   border-bottom: 1px solid transparent;
   background: transparent;
@@ -220,14 +229,31 @@ th,
   text-transform: uppercase;
 }
 
-.control-label:hover,
-.control-label:focus-visible {
+.control-label:hover {
   color: var(--ci-accent-soft);
 }
 
-.control-label:focus-visible {
-  outline: 1px solid var(--ci-accent);
+#overview-daily:focus-visible ~ .controls label[for="overview-daily"],
+#overview-weekly:focus-visible ~ .controls label[for="overview-weekly"],
+#overview-overall:focus-visible ~ .controls label[for="overview-overall"],
+#sort-date:focus-visible ~ .controls label[for="sort-date"],
+#sort-sessions:focus-visible ~ .controls label[for="sort-sessions"],
+#sort-tokens:focus-visible ~ .controls label[for="sort-tokens"] {
+  color: var(--ci-accent-soft);
+  outline: 2px solid var(--ci-accent);
   outline-offset: 3px;
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  border: 0;
+  white-space: nowrap;
 }
 
 .overview-view,

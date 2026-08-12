@@ -55,6 +55,9 @@ is disabled, generation continues and reports the setting in data quality.
 All indexed labels are HTML-escaped. The renderer has regression coverage for markup, event-handler
 attributes, quotes, entities, Unicode, and Traditional Chinese. It contains no external fonts,
 remote JavaScript, analytics, tracking, or remote assets and works directly under `file://`.
+The CSS-only period and sort controls remain keyboard operable with visible focus indicators and
+44-pixel targets. Data tables expose programmatic captions and column-header scope, and both light
+and dark palettes keep small interface text at WCAG AA contrast or better.
 
 Dashboard destinations are resolved before writing. Targets inside the configured Codex home,
 targets aliasing source files, and the active Insights database itself are rejected. Existing output

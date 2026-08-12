@@ -94,11 +94,11 @@ def _overview_section(
         for key, label in (("daily", "Today"), ("weekly", "This week"), ("overall", "All time"))
     )
     return (
-        '<div class="overview-switch">'
+        '<div class="overview-switch" role="radiogroup" aria-label="Overview period">'
         '<input class="control-input" type="radio" name="overview" id="overview-daily">'
         '<input class="control-input" type="radio" name="overview" id="overview-weekly">'
         '<input class="control-input" type="radio" name="overview" id="overview-overall" checked>'
-        '<div class="controls" aria-label="Overview period">'
+        '<div class="controls">'
         '<label class="control-label" for="overview-daily">Daily</label>'
         '<label class="control-label" for="overview-weekly">Weekly</label>'
         '<label class="control-label" for="overview-overall">Overall</label></div>'
@@ -154,11 +154,11 @@ def _activity_section(rows: list[dict[str, object]]) -> str:
     return _section(
         "Activity",
         "Tokens use event time; sessions use logical-session start time.",
-        '<div class="activity-sort">'
+        '<div class="activity-sort" role="radiogroup" aria-label="Activity sort">'
         '<input class="control-input" type="radio" name="activity-sort" id="sort-date" checked>'
         '<input class="control-input" type="radio" name="activity-sort" id="sort-sessions">'
         '<input class="control-input" type="radio" name="activity-sort" id="sort-tokens">'
-        '<div class="controls" aria-label="Activity sort">'
+        '<div class="controls">'
         '<span class="muted">Sort</span>'
         '<label class="control-label" for="sort-date">Date</label>'
         '<label class="control-label" for="sort-sessions">Sessions</label>'
@@ -192,7 +192,11 @@ def _activity_order(rows: list[dict[str, object]], criterion: str) -> str:
         + '</div><div class="panel"><h3>Reconciled tokens by event day</h3>'
         + _bar_rows(tokens, alternative=True)
         + "</div></div>"
-        + _table(("Day", "Sessions", "Reconciled tokens", "Coverage"), table_rows)
+        + _table(
+            ("Day", "Sessions", "Reconciled tokens", "Coverage"),
+            table_rows,
+            caption=f"Daily activity sorted by {criterion}",
+        )
     )
 
 
@@ -228,6 +232,7 @@ def _repository_section(rows: list[dict[str, object]]) -> str:
         _table(
             ("Repository", "Sessions", "Tokens", "Commands", "HIGH commits", "Task", "Outcomes"),
             table_rows,
+            caption="Repository activity",
         ),
     )
 
@@ -247,7 +252,11 @@ def _model_section(rows: list[dict[str, object]]) -> str:
     return _section(
         "Model activity",
         "This is usage telemetry, not a model-quality leaderboard.",
-        _table(("Model", "Sessions", "Tokens", "Observed median", "Observed p90", "Commands"), table_rows),
+        _table(
+            ("Model", "Sessions", "Tokens", "Observed median", "Observed p90", "Commands"),
+            table_rows,
+            caption="Model activity",
+        ),
     )
 
 
@@ -285,7 +294,11 @@ def _tools_section(tools: Mapping[str, object]) -> str:
         + '</div><div class="panel"><h3>Executables</h3>'
         + _bar_rows(executables, alternative=True)
         + "</div></div>"
-        + _table(("Repeated category", "Executable", "Invocations", "Sessions"), repeated_rows),
+        + _table(
+            ("Repeated category", "Executable", "Invocations", "Sessions"),
+            repeated_rows,
+            caption="Repeated command patterns",
+        ),
     )
 
 
@@ -296,9 +309,19 @@ def _tasks_section(tasks: Mapping[str, object]) -> str:
         "Task taxonomy",
         "UNKNOWN remains part of the denominator; actions and domains are independent views.",
         '<div class="grid-2"><div class="panel"><h3>Actions</h3>'
-        + _table(("Action", "Sessions", "Tokens"), actions, panel=False)
+        + _table(
+            ("Action", "Sessions", "Tokens"),
+            actions,
+            caption="Task actions",
+            panel=False,
+        )
         + '</div><div class="panel"><h3>Domains</h3>'
-        + _table(("Domain", "Sessions", "Tokens"), domains, panel=False)
+        + _table(
+            ("Domain", "Sessions", "Tokens"),
+            domains,
+            caption="Task domains",
+            panel=False,
+        )
         + "</div></div>",
     )
 
@@ -325,9 +348,19 @@ def _outcomes_section(outcomes: Mapping[str, object]) -> str:
     )
     body = (
         '<div class="grid-2"><div class="panel"><h3>Outcome</h3>'
-        + _table(("Class", "Sessions"), outcome_rows, panel=False)
+        + _table(
+            ("Class", "Sessions"),
+            outcome_rows,
+            caption="Task outcomes",
+            panel=False,
+        )
         + '</div><div class="panel"><h3>Confidence</h3>'
-        + _table(("Tier", "Sessions"), confidence_rows, panel=False)
+        + _table(
+            ("Tier", "Sessions"),
+            confidence_rows,
+            caption="Outcome confidence",
+            panel=False,
+        )
         + "</div></div>"
         + f'<div class="secondary"><span>Strongly evidenced <strong>{_integer(outcomes.get("strongly_evidenced_count"))}</strong></span>'
         f'<span>Broad non-UNKNOWN <strong>{_integer(outcomes.get("classifiable_count"))}</strong></span>'
@@ -350,7 +383,7 @@ def _git_section(git: Mapping[str, object]) -> str:
     return _section(
         "Git provenance",
         "Only HIGH is confirmed; MEDIUM and LOW remain candidates.",
-        _table(("Confidence", "Associations"), rows)
+        _table(("Confidence", "Associations"), rows, caption="Git association confidence")
         + f'<div class="secondary"><span>Confirmed commits <strong>{_integer(git.get("high_confidence_commits"))}</strong></span>'
         f'<span>Timing candidates omitted <strong>{_integer(git.get("timing_candidates_omitted"))}</strong></span>'
         f'<span>Sessions with confirmed commits <strong>{_integer(git.get("sessions_with_high_confidence_commits"))}</strong></span>'
@@ -373,7 +406,11 @@ def _interesting_section(rows: list[dict[str, object]]) -> str:
     return _section(
         "Interesting sessions",
         "IDs and normalized metadata only; no prompt or transcript content is included.",
-        _table(("Reason", "Session", "Repository", "Model", "Observed tokens", "Duration"), table_rows),
+        _table(
+            ("Reason", "Session", "Repository", "Model", "Observed tokens", "Duration"),
+            table_rows,
+            caption="Interesting sessions",
+        ),
     )
 
 
@@ -443,18 +480,22 @@ def _table(
     headers: tuple[str, ...],
     rows: Iterable[tuple[str, ...]],
     *,
+    caption: str,
     panel: bool = True,
 ) -> str:
     materialized = tuple(rows)
     if not materialized:
         content = '<div class="empty">No matching data.</div>'
     else:
-        head = "".join(f"<th>{_escape(value)}</th>" for value in headers)
+        head = "".join(f'<th scope="col">{_escape(value)}</th>' for value in headers)
         body = "".join(
             "<tr>" + "".join(f"<td>{_escape(value)}</td>" for value in row) + "</tr>"
             for row in materialized
         )
-        content = f"<table><thead><tr>{head}</tr></thead><tbody>{body}</tbody></table>"
+        content = (
+            f'<table><caption class="sr-only">{_escape(caption)}</caption>'
+            f"<thead><tr>{head}</tr></thead><tbody>{body}</tbody></table>"
+        )
     return f'<div class="panel">{content}</div>' if panel else content
 
 

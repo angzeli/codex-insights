@@ -25,7 +25,8 @@ Reports cannot be written inside the selected Codex home or over the Codex Insig
   task, and originated-command groups remain complete so reconciliation invariants can be checked.
 - **HTML** is a static self-contained file with escaped content, inline CSS, no scripts, no external
   CDN, no tracking, and no remote assets. It includes a small activity chart derived from the same
-  day buckets used in JSON.
+  day buckets used in JSON. Tables have programmatic captions and scoped column headers; the light
+  and dark palettes retain accessible small-text contrast.
 
 ## Semantics and coverage
 

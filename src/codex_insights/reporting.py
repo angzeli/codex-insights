@@ -125,6 +125,10 @@ def render_html(report: AnalyticsReport) -> str:
     title = f"Codex Insights {report.kind.value.title()} Report"
     activity = _sequence(data["activity"])
     interesting = _html_interesting(_sequence(data["interesting_sessions"]))
+    repository_table = _html_group_table(
+        _sequence(data["repositories"]), "Repository activity"
+    )
+    model_table = _html_group_table(_sequence(data["models"]), "Model activity")
     quality_json = html.escape(
         json.dumps(data["data_quality"], indent=2, ensure_ascii=False)
     )
@@ -150,8 +154,8 @@ to {html.escape(str(period['end']))} · {html.escape(report.timezone)} · genera
 <div class="cards">{_overview_cards(overview)}</div>
 <section><h2>Activity</h2>{_bar_chart(activity, label="label", value="sessions",
 metric_path=("metrics", "session_count"))}{_html_activity_table(activity)}</section>
-<section><h2>Repositories</h2>{_html_group_table(_sequence(data['repositories']))}</section>
-<section><h2>Models</h2>{_html_group_table(_sequence(data['models']))}</section>
+<section><h2>Repositories</h2>{repository_table}</section>
+<section><h2>Models</h2>{model_table}</section>
 <section><h2>Tasks</h2>{_html_tasks(_mapping(data['tasks']))}</section>
 <section><h2>Tool activity</h2>{_html_tools(_mapping(data['tools']))}</section>
 <section><h2>Git</h2>{_html_git(_mapping(data['git']))}</section>
@@ -443,10 +447,11 @@ def _html_activity_table(rows: list[dict[str, object]]) -> str:
             )
             for row in rows
         ),
+        caption="Activity by period",
     )
 
 
-def _html_group_table(rows: list[dict[str, object]]) -> str:
+def _html_group_table(rows: list[dict[str, object]], caption: str) -> str:
     return _html_table(
         ("Group", "Sessions", "Reconciled tokens", "Originated commands"),
         tuple(
@@ -458,6 +463,7 @@ def _html_group_table(rows: list[dict[str, object]]) -> str:
             )
             for row in rows[:10]
         ),
+        caption=caption,
     )
 
 
@@ -466,13 +472,13 @@ def _html_tasks(tasks: dict[str, object]) -> str:
     domains = _sequence(_mapping(tasks.get("domains")).get("groups"))
     return (
         "<h3>Actions</h3>"
-        + _html_task_groups(actions)
+        + _html_task_groups(actions, caption="Task actions")
         + "<h3>Domains</h3>"
-        + _html_task_groups(domains)
+        + _html_task_groups(domains, caption="Task domains")
     )
 
 
-def _html_task_groups(rows: list[dict[str, object]]) -> str:
+def _html_task_groups(rows: list[dict[str, object]], *, caption: str) -> str:
     return _html_table(
         ("Group", "Sessions", "Reconciled tokens"),
         tuple(
@@ -483,6 +489,7 @@ def _html_task_groups(rows: list[dict[str, object]]) -> str:
             )
             for row in rows[:10]
         ),
+        caption=caption,
     )
 
 
@@ -496,6 +503,7 @@ def _html_tools(tools: dict[str, object]) -> str:
             ("Git inspections", _number(tools.get("git_inspections"))),
             ("Known-result failure rate", _percent(tools.get("failure_rate"))),
         ),
+        caption="Tool activity summary",
     )
 
 
@@ -503,6 +511,7 @@ def _html_git(git: dict[str, object]) -> str:
     return _html_table(
         ("Confidence", "Associations"),
         tuple((level.upper(), _number(git.get(level))) for level in ("high", "medium", "low")),
+        caption="Git association confidence",
     )
 
 
@@ -514,6 +523,7 @@ def _html_outcomes(outcomes: dict[str, object]) -> str:
             (_short(key), _number(_mapping(value).get("count")))
             for key, value in sorted(distribution.items())
         ),
+        caption="Task outcomes",
     )
 
 
@@ -529,18 +539,27 @@ def _html_interesting(rows: list[dict[str, object]]) -> str:
             )
             for row in rows
         ),
+        caption="Interesting sessions",
     )
 
 
-def _html_table(headers: tuple[str, ...], rows: tuple[tuple[str, ...], ...]) -> str:
-    head = "".join(f"<th>{html.escape(value)}</th>" for value in headers)
+def _html_table(
+    headers: tuple[str, ...],
+    rows: tuple[tuple[str, ...], ...],
+    *,
+    caption: str,
+) -> str:
+    head = "".join(f'<th scope="col">{html.escape(value)}</th>' for value in headers)
     body = "".join(
         "<tr>" + "".join(f"<td>{html.escape(value)}</td>" for value in row) + "</tr>"
         for row in rows
     )
     if not body:
         body = f'<tr><td colspan="{len(headers)}" class="muted">No data</td></tr>'
-    return f"<table><thead><tr>{head}</tr></thead><tbody>{body}</tbody></table>"
+    return (
+        f'<table><caption class="sr-only">{html.escape(caption)}</caption>'
+        f"<thead><tr>{head}</tr></thead><tbody>{body}</tbody></table>"
+    )
 
 
 def _mapping(value: object) -> dict[str, Any]:

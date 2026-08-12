@@ -133,6 +133,12 @@ def test_report_formats_are_parseable_offline_and_escape_unsafe_names(
     assert "https://" not in html_text
     assert "http://" not in html_text
     assert "<html" in html_text and "</html>" in html_text
+    assert html_text.count("<table>") == html_text.count('<caption class="sr-only">')
+    assert html_text.count("<table>") > 0
+    assert "<th>" not in html_text
+    assert '<th scope="col">' in html_text
+    assert '<caption class="sr-only">Repository activity</caption>' in html_text
+    assert '<caption class="sr-only">Task outcomes</caption>' in html_text
 
 
 def test_empty_and_sparse_monthly_reports_remain_explicit(tmp_path: Path) -> None:
