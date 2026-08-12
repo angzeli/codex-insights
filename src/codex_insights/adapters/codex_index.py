@@ -41,7 +41,7 @@ from codex_insights.models import (
     UsageVector,
 )
 
-PARSER_VERSION = "codex-source-parser-v8"
+PARSER_VERSION = "codex-source-parser-v9"
 SOURCE_SCHEMA_FINGERPRINT_VERSION = "codex-source-schema-v1"
 MAX_ROLLOUT_LINE_BYTES = 1024 * 1024
 MAX_STATE_REFERENCE_CHECKS = 1_000

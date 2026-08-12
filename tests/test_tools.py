@@ -4,6 +4,7 @@ import json
 import sqlite3
 from pathlib import Path
 
+import pytest
 from typer.testing import CliRunner
 
 from codex_insights.adapters import CodexLocalAdapter
@@ -43,6 +44,117 @@ def test_command_privacy_and_test_scope_are_conservative() -> None:
     assert subset.test_scope is CommandTestScope.SUBSET
     assert heredoc.redacted
     assert "private" not in heredoc.text
+
+
+@pytest.mark.parametrize(
+    ("command", "executable", "category"),
+    [
+        ("git status", "git", CommandCategory.GIT_INSPECTION),
+        ("git commit -m subject", "git", CommandCategory.GIT_MUTATION),
+        (
+            "/opt/homebrew/bin/python3 script.py",
+            "python3",
+            CommandCategory.PYTHON_EXECUTION,
+        ),
+        ("MPLBACKEND=Agg python script.py", "python", CommandCategory.PYTHON_EXECUTION),
+        (
+            "OMP_NUM_THREADS=8 MKL_NUM_THREADS=4 cp2k.psmp -i input.inp",
+            "cp2k.psmp",
+            CommandCategory.SCIENTIFIC_COMPUTATION,
+        ),
+        ("env FOO=bar python script.py", "python", CommandCategory.PYTHON_EXECUTION),
+        (
+            "/usr/bin/env -i PATH=/bin python -m pytest",
+            "python",
+            CommandCategory.TESTING,
+        ),
+        ("sudo -u runner pytest", "pytest", CommandCategory.TESTING),
+        ("time -p pytest", "pytest", CommandCategory.TESTING),
+        ("nohup pytest", "pytest", CommandCategory.TESTING),
+        ("python -m pytest", "python", CommandCategory.TESTING),
+        ("uv run python script.py", "uv", CommandCategory.PYTHON_EXECUTION),
+        (
+            "uv run --compile-bytecode python script.py",
+            "uv",
+            CommandCategory.PYTHON_EXECUTION,
+        ),
+        ("uv run pytest", "uv", CommandCategory.TESTING),
+        ("uv run ruff check .", "uv", CommandCategory.LINTING),
+        ("uv run mypy src", "uv", CommandCategory.TYPE_CHECKING),
+        ("cd repo && pytest", "pytest", CommandCategory.TESTING),
+        ("rg pattern . | head", "rg", CommandCategory.TEXT_SEARCH),
+        ("git status && git diff", "git", CommandCategory.GIT_INSPECTION),
+        ("git status || git diff", "git", CommandCategory.GIT_INSPECTION),
+        ('"/Applications/My Tool/bin/tool" --flag', "tool", CommandCategory.OTHER),
+        ("bash script.sh", "bash", CommandCategory.OTHER),
+        ("orca input.inp", "orca", CommandCategory.SCIENTIFIC_COMPUTATION),
+        ("vasp_std", "vasp_std", CommandCategory.SCIENTIFIC_COMPUTATION),
+        ("multiwfn input.txt", "multiwfn", CommandCategory.SCIENTIFIC_COMPUTATION),
+        ("python ase_workflow.py", "python", CommandCategory.SCIENTIFIC_COMPUTATION),
+        ("pgrep -f orca", "pgrep", CommandCategory.PROCESS_STATUS_MONITORING),
+        ("find . -name '*.py'", "find", CommandCategory.FILESYSTEM_INSPECTION),
+    ],
+)
+def test_shell_head_resolution_is_conservative_and_preserves_categories(
+    command: str,
+    executable: str,
+    category: CommandCategory,
+) -> None:
+    normalized = normalize_command(command)
+
+    assert normalized.executable == executable
+    assert normalized.category is category
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "cd repo",
+        "for file in *.py; do python \"$file\"; done",
+        "while pgrep -f orca; do sleep 5; done",
+        "if pytest; then echo ok; fi",
+        "(cd repo && ruff check .)",
+        "-f format pytest",
+        "-v pytest",
+        "command -v python",
+        "env -S 'python -m pytest'",
+        "python 'unterminated",
+    ],
+)
+def test_ambiguous_or_non_executable_shell_heads_remain_unknown(command: str) -> None:
+    normalized = normalize_command(command)
+
+    assert normalized.executable is None
+    assert normalized.category is CommandCategory.UNKNOWN
+
+
+def test_heredoc_body_is_not_parsed_as_an_executable() -> None:
+    normalized = normalize_command("python - <<'PY'\nfor = 'private'\nPY\n")
+
+    assert normalized.executable == "python"
+    assert normalized.category is CommandCategory.PYTHON_EXECUTION
+    assert "private" not in normalized.text
+
+
+def test_known_non_executable_heads_are_never_emitted() -> None:
+    invalid = {"-f", "-v", "for", "while", "if", "then", "do", "done"}
+    commands = (
+        "-f value pytest",
+        "-v pytest",
+        "for item in one; do echo $item; done",
+        "while true; do sleep 1; done",
+        "if true; then pytest; fi",
+    )
+
+    assert {normalize_command(command).executable for command in commands}.isdisjoint(invalid)
+
+
+def test_repeated_command_fingerprint_does_not_collapse_by_executable() -> None:
+    status = normalize_command("git status")
+    diff = normalize_command("git diff")
+
+    assert status.executable == diff.executable == "git"
+    assert status.fingerprint != diff.fingerprint
 
 
 def test_new_exec_wrapper_and_structured_result_are_normalized_without_output() -> None:
@@ -207,6 +319,84 @@ def test_indexed_tool_activity_is_lineage_aware_and_reconciles(tmp_path: Path) -
     )
     assert cli.exit_code == 0
     assert json.loads(cli.stdout)["originated_commands"] == 2
+
+
+def test_parser_version_reclassifies_persisted_executables_without_reset(
+    tmp_path: Path,
+) -> None:
+    codex_home = tmp_path / "codex-home"
+    sessions = codex_home / "sessions"
+    sessions.mkdir(parents=True)
+    repository = tmp_path / "repo-one"
+    (repository / ".git").mkdir(parents=True)
+    _write_records(
+        sessions / "session.jsonl",
+        (
+            _call(
+                "for file in *.py; do python \"$file\"; done",
+                "loop-call",
+                "loop-item",
+                "2026-08-01T00:01:00Z",
+            ),
+            _call(
+                "cd repo && pytest",
+                "test-call",
+                "test-item",
+                "2026-08-01T00:02:00Z",
+            ),
+        ),
+    )
+    with sqlite3.connect(codex_home / "state_9.sqlite") as connection:
+        connection.executescript(
+            f"""
+            CREATE TABLE threads (
+                id TEXT PRIMARY KEY, rollout_path TEXT NOT NULL, created_at TEXT,
+                source TEXT, cwd TEXT, model TEXT
+            );
+            INSERT INTO threads VALUES (
+                'session', 'sessions/session.jsonl', '2026-08-01T00:00:00Z',
+                'vscode', {json.dumps(str(repository))}, 'model-a'
+            );
+            """
+        )
+    database = tmp_path / "analytics.sqlite3"
+    adapter = CodexLocalAdapter(resolve_codex_home(codex_home))
+
+    first = index_source(adapter, database, codex_home=codex_home)
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            "UPDATE ingestion_state SET parser_version = 'codex-source-parser-v8'"
+        )
+        connection.execute(
+            """
+            UPDATE tool_activity
+            SET executable = CASE source_ordinal WHEN 0 THEN 'for' ELSE 'cd' END,
+                command_category = 'other',
+                classifier_version = 'command-classifier-v1'
+            """
+        )
+        connection.commit()
+
+    upgraded = index_source(adapter, database, codex_home=codex_home)
+    unchanged = index_source(adapter, database, codex_home=codex_home)
+
+    with sqlite3.connect(database) as connection:
+        rows = connection.execute(
+            """
+            SELECT source_ordinal, executable, command_category, classifier_version
+            FROM tool_activity
+            ORDER BY source_ordinal
+            """
+        ).fetchall()
+    assert first.new == 1
+    assert upgraded.updated == 1
+    assert upgraded.new == 0
+    assert rows == [
+        (0, None, "unknown", "command-classifier-v2"),
+        (1, "pytest", "testing", "command-classifier-v2"),
+    ]
+    assert unchanged.unchanged == 1
+    assert unchanged.updated == 0
 
 
 def _call(command: str, call_id: str, item_id: str, timestamp: str) -> dict[str, object]:

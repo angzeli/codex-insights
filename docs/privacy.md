@@ -28,6 +28,10 @@ fingerprints/provenance, prompt identity and replay observations when a prompt i
 fingerprints/categories/executables, Git correlations, outcomes, task taxonomy, compatibility
 diagnostics, and ingestion state.
 
+Executable metadata is deliberately conservative: unresolved shell control flow, grouping, or
+unsupported wrapper syntax is stored as null rather than as a fabricated command identity. This
+does not remove the distinct privacy-filtered command fingerprint used for command counts.
+
 Optional text is limited to:
 
 - origin-aware user prompt text after `prompt-content-v1` redaction and a 100,000-character cap;

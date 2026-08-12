@@ -278,6 +278,11 @@ timestamps, cumulative vectors, and delta vectors. It stores no message, prompt,
 output, raw JSONL, or hidden reasoning. Parser version 8 forces a controlled reparse to backfill
 these rows; pre-existing aggregate usage remains intact until that reparse succeeds.
 
+Source parser version 9 forces one controlled reparse after the command classifier learned
+conservative shell-head resolution. This re-derives `tool_activity` executable/category metadata in
+place, without a schema migration, index reset, or source-data write; subsequent unchanged indexing
+returns to the normal size/mtime/file-identity fast path.
+
 `usage` contains one observed aggregate row per session. `usage_semantics` distinguishes a source-reported
 `cumulative_total` from `summed_event_deltas`; `unavailable` means no trustworthy token record was
 observed. Schema version 3 makes each token metric nullable so an absent field remains different
@@ -325,7 +330,9 @@ origin mapping. Command text is optional, bounded, and privacy-filtered. Command
 the retained fingerprint instead of text presence, and `command_operation` stores only the narrow
 non-sensitive `git_commit` marker required to preserve Git provenance after command-text purge. Call
 IDs are digested; result rows retain only status, exit code, duration, and exact commit-hash evidence
-where applicable. Raw stdout/stderr, patch bodies, and arbitrary tool results are not stored.
+where applicable. The nullable executable is the first defensibly executable command head, not a
+shell keyword, leading option, or whole-command identity. Raw stdout/stderr, patch bodies, and
+arbitrary tool results are not stored.
 
 `content_retention_state` records the prompt/command-text settings applied by the most recent index
 run. Persistent user policy itself lives in the separate platform config file, not in Codex home.

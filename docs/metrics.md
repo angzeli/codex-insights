@@ -46,8 +46,15 @@ billing, quota, or private accounting algorithms.
   Exact inherited/replayed observations are excluded from additive activity counts.
 - **Originated command:** an originated tool call with privacy-filtered command metadata. It excludes
   raw stdout/stderr and inherited observations.
+- **Command executable:** the first defensibly executable command head. Leading assignments and
+  recognized wrappers are resolved, and a setup-only `cd` may be skipped before `&&`/`;`. For a
+  pipeline or chain, the field describes the first workload command; shell control flow, grouping,
+  option-like heads, and unsupported wrapper options remain null instead of being guessed. `uv run`
+  retains public executable `uv`, while a safely resolved workload drives its command category.
 - **Repeated command:** the same privacy-filtered command fingerprint invoked more than once in the
-  selected scope. It is descriptive and does not by itself imply rework.
+  selected scope. The fingerprint covers the privacy-filtered normalized command, not merely its
+  executable, so distinct commands using the same executable are not collapsed. It is descriptive
+  and does not by itself imply rework.
 - **Confirmed commit:** a HIGH-confidence session/commit association based on exact, originated Git
   result evidence. MEDIUM and LOW candidates are always reported separately.
 - **Candidate commit:** a MEDIUM- or LOW-confidence repository-local association supported by weaker
