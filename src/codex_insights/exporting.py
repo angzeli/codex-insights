@@ -168,7 +168,8 @@ def _session_records(
     where, parameters = _session_where(filters, "sessions")
     rows = connection.execute(
         f"""
-        SELECT source_session_id, source_type, client_source, started_at, updated_at,
+        SELECT source_session_id, source_type, client_source, client_kind,
+               subagent_source_kind, source_parent_session_id, started_at, updated_at,
                apparent_ended_at, cwd, repository_root, repository_name, git_branch,
                git_sha, model, model_provider, codex_version, archived
         FROM source_sessions AS sessions
@@ -183,6 +184,9 @@ def _session_records(
             session_id=row["source_session_id"],
             source_type=row["source_type"],
             client_source=row["client_source"],
+            client_kind=row["client_kind"],
+            subagent_source_kind=row["subagent_source_kind"],
+            source_parent_session_id=row["source_parent_session_id"],
             started_at=row["started_at"],
             updated_at=row["updated_at"],
             apparent_ended_at=row["apparent_ended_at"],
@@ -605,7 +609,8 @@ _COMMON_FIELDS = ("export_schema_version", "dataset")
 _CSV_FIELDS: dict[ExportDataset, tuple[str, ...]] = {
     ExportDataset.SESSIONS: _COMMON_FIELDS
     + (
-        "session_id", "source_type", "client_source", "started_at", "updated_at",
+        "session_id", "source_type", "client_source", "client_kind",
+        "subagent_source_kind", "source_parent_session_id", "started_at", "updated_at",
         "apparent_ended_at", "cwd", "repository_root", "repository_name", "git_branch",
         "git_sha", "model", "model_provider", "codex_version", "archived",
     ),

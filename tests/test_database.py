@@ -63,6 +63,9 @@ def test_index_schema_is_versioned_and_normalized(tmp_path: Path) -> None:
 
     assert version == SCHEMA_VERSION
     assert "client_source" in session_columns
+    assert "client_kind" in session_columns
+    assert "subagent_source_kind" in session_columns
+    assert "source_parent_session_id" in session_columns
     assert usage_columns["total_tokens"] is False
     assert {
         "source_sessions",

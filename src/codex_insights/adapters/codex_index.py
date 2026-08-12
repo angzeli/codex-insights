@@ -20,6 +20,7 @@ from codex_insights.db import open_source_sqlite_readonly
 from codex_insights.models import (
     CapabilityObservation,
     CapabilityStatus,
+    ClientKind,
     EventCategory,
     EventFamily,
     NormalizedEventCount,
@@ -36,16 +37,27 @@ from codex_insights.models import (
     SourceCapability,
     SourceSemanticWarning,
     SourceSessionCandidate,
+    SubagentSourceKind,
     UnknownSourceObservation,
     UsageSemantics,
     UsageVector,
 )
 
-PARSER_VERSION = "codex-source-parser-v9"
+PARSER_VERSION = "codex-source-parser-v10"
 SOURCE_SCHEMA_FINGERPRINT_VERSION = "codex-source-schema-v1"
 MAX_ROLLOUT_LINE_BYTES = 1024 * 1024
 MAX_STATE_REFERENCE_CHECKS = 1_000
 MAX_UNKNOWN_NAMES_PER_KIND = 128
+
+_CLI_SOURCES = {"cli", "terminal", "command_line"}
+_EDITOR_SOURCES = {
+    "editor",
+    "vscode",
+    "visual_studio_code",
+    "cursor",
+    "jetbrains",
+    "pycharm",
+}
 
 _COLUMN_ALIASES: dict[str, tuple[str, ...]] = {
     "id": ("id", "thread_id", "session_id", "conversation_id"),
@@ -1098,11 +1110,17 @@ def _candidate_from_row(
     archived_at, _ = _parse_timestamp(_row_value(row, columns, "archived_at"))
     cwd = _path_value(_row_value(row, columns, "cwd"))
     repository_root, repository_name = _resolve_repository(cwd)
+    client_source, client_kind, subagent_kind, source_parent_id = _normalize_client_source(
+        _row_value(row, columns, "client_source")
+    )
     session = NormalizedSourceSession(
         source_session_id=source_session_id,
         source_type=source_type,
         source_home=home,
-        client_source=_short_text(_row_value(row, columns, "client_source")),
+        client_source=client_source,
+        client_kind=client_kind,
+        subagent_source_kind=subagent_kind,
+        source_parent_session_id=source_parent_id,
         started_at=started_at,
         updated_at=updated_at,
         apparent_ended_at=archived_at,
@@ -1132,6 +1150,41 @@ def _candidate_from_row(
         source_schema_hints=schema_hints,
         capabilities=_catalogue_capabilities(columns, session),
     )
+
+
+def _normalize_client_source(
+    value: object,
+) -> tuple[str | None, ClientKind, SubagentSourceKind | None, str | None]:
+    """Normalize scalar or structured catalogue source metadata without retaining raw JSON."""
+
+    source = _short_text(value)
+    if source is None:
+        return None, ClientKind.UNKNOWN, None, None
+    try:
+        decoded = json.loads(source)
+    except json.JSONDecodeError:
+        decoded = None
+    if isinstance(decoded, dict):
+        subagent = decoded.get("subagent")
+        if isinstance(subagent, dict):
+            spawn = subagent.get("thread_spawn")
+            if isinstance(spawn, dict):
+                parent = _short_text(spawn.get("parent_thread_id"))
+                return None, ClientKind.SUBAGENT, SubagentSourceKind.THREAD_SPAWN, parent
+            if "guardian" in subagent:
+                return None, ClientKind.SUBAGENT, SubagentSourceKind.GUARDIAN, None
+            return None, ClientKind.SUBAGENT, SubagentSourceKind.OTHER, None
+        if "guardian" in decoded:
+            return None, ClientKind.SUBAGENT, SubagentSourceKind.GUARDIAN, None
+        return None, ClientKind.UNKNOWN, None, None
+    if source.startswith(("{", "[")):
+        return None, ClientKind.UNKNOWN, None, None
+    normalized = source.casefold().replace("-", "_").replace(" ", "_")
+    if normalized in _CLI_SOURCES:
+        return source, ClientKind.CLI, None, None
+    if normalized in _EDITOR_SOURCES:
+        return source, ClientKind.EDITOR, None, None
+    return source, ClientKind.OTHER, None, None
 
 
 def _catalogue_capabilities(

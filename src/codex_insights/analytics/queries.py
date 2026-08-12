@@ -233,6 +233,9 @@ class SessionDetail:
     duration_seconds: int | None
     source_type: str
     client_source: str | None
+    client_kind: str
+    subagent_source_kind: str | None
+    source_parent_session_id: str | None
     cwd: Path | None
     repository_root: Path | None
     repository_name: str | None
@@ -257,7 +260,11 @@ class SessionDetail:
             "apparent_ended_at": _json_datetime(self.apparent_ended_at),
             "duration_seconds": self.duration_seconds,
             "source_type": self.source_type,
-            "source": self.client_source or self.source_type,
+            "source": self.client_kind,
+            "client_source": self.client_source,
+            "client_kind": self.client_kind,
+            "subagent_source_kind": self.subagent_source_kind,
+            "source_parent_session_id": self.source_parent_session_id,
             "cwd": str(self.cwd) if self.cwd else None,
             "repository_root": str(self.repository_root) if self.repository_root else None,
             "repository_name": self.repository_name,
@@ -427,8 +434,10 @@ def list_sessions(
         conditions.append("COALESCE(task_filter.domain, 'unknown') = ?")
         parameters.append(selected.task_domain.casefold())
     if selected.source:
-        conditions.append("COALESCE(s.client_source, s.source_type) = ? COLLATE NOCASE")
-        parameters.append(selected.source)
+        conditions.append(
+            "(s.client_kind = ? COLLATE NOCASE OR s.client_source = ? COLLATE NOCASE)"
+        )
+        parameters.extend((selected.source, selected.source))
     if selected.archived is not None:
         conditions.append("s.archived = ?")
         parameters.append(int(selected.archived))
@@ -638,7 +647,7 @@ def _list_item(row: sqlite3.Row) -> SessionListItem:
         duration_seconds=_duration_seconds(started, ended),
         repository=_repository_label(row["repository_name"], row["repository_root"]),
         model=_optional_str(row["model"]),
-        source=_optional_str(row["client_source"]) or str(row["source_type"]),
+        source=str(row["client_kind"]),
         archived=bool(row["archived"]),
         total_tokens=usage.total_tokens,
         event_count=_optional_int(row["event_count"]),
@@ -673,6 +682,9 @@ def _session_detail(
         duration_seconds=_duration_seconds(started, ended),
         source_type=str(row["source_type"]),
         client_source=_optional_str(row["client_source"]),
+        client_kind=str(row["client_kind"]),
+        subagent_source_kind=_optional_str(row["subagent_source_kind"]),
+        source_parent_session_id=_optional_str(row["source_parent_session_id"]),
         cwd=_optional_path(row["cwd"]),
         repository_root=_optional_path(row["repository_root"]),
         repository_name=_optional_str(row["repository_name"]),

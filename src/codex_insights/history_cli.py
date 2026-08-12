@@ -281,9 +281,11 @@ def _render_session(detail: SessionDetail) -> None:
         f"({_format_duration(detail.duration_seconds)})",
     )
     metadata.add_row("Updated", _format_timestamp(detail.updated_at))
-    source = detail.client_source or detail.source_type
-    if detail.client_source and detail.client_source != detail.source_type:
-        source = f"{detail.client_source} ({detail.source_type})"
+    source = detail.client_kind
+    if detail.client_source and detail.client_source.casefold() != detail.client_kind:
+        source = f"{detail.client_kind} ({detail.client_source})"
+    if detail.subagent_source_kind:
+        source = f"{source}: {detail.subagent_source_kind}"
     metadata.add_row("Source", source)
     metadata.add_row("CWD", str(detail.cwd) if detail.cwd else "unknown")
     metadata.add_row(

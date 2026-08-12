@@ -1528,7 +1528,7 @@ def _reconcile_prompts(
     session_rows = {
         str(row["source_session_id"]): row
         for row in connection.execute(
-            "SELECT id, source_session_id, client_source FROM source_sessions "
+            "SELECT id, source_session_id, client_kind FROM source_sessions "
             "WHERE source_type = ? AND source_home = ?",
             (adapter.name, source_home),
         )
@@ -1539,7 +1539,7 @@ def _reconcile_prompts(
             if session_row is None:
                 continue
             session_id = int(session_row["id"])
-            allowed, authorship_evidence = _user_prompt_source(session_row["client_source"])
+            allowed, authorship_evidence = _user_prompt_source(session_row["client_kind"])
             event_rows = {
                 int(row["source_ordinal"]): row
                 for row in _event_rows(connection, session_id)
@@ -1598,20 +1598,12 @@ def _is_origin_prompt_event(row: sqlite3.Row | None, session_id: int) -> bool:
 def _user_prompt_source(value: object) -> tuple[bool, str]:
     if not isinstance(value, str) or not value.strip():
         return False, "source_authorship_unknown"
-    source = value.strip()
-    lowered = source.lower()
-    if "guardian" in lowered:
-        return False, "source_identifies_guardian"
-    if "subagent" in lowered or "thread_spawn" in lowered:
+    source = value.strip().casefold()
+    if source == "subagent":
         return False, "source_identifies_subagent"
-    if source.startswith("{"):
-        try:
-            decoded = json.loads(source)
-        except json.JSONDecodeError:
-            return False, "structured_source_unrecognized"
-        if isinstance(decoded, dict):
-            return False, "structured_source_not_user_authored"
-    return True, "interactive_client_source"
+    if source not in {"cli", "editor"}:
+        return False, "source_authorship_unknown"
+    return True, "interactive_client_kind"
 
 
 def _stable_prompt_id(
@@ -1855,13 +1847,15 @@ def _upsert_session_metadata(
         cursor = connection.execute(
             """
             INSERT INTO source_sessions(
-                source_session_id, source_type, source_home, client_source, started_at, updated_at,
+                source_session_id, source_type, source_home, client_source, client_kind,
+                subagent_source_kind, source_parent_session_id, started_at, updated_at,
                 apparent_ended_at, source_timezone_offset_minutes, cwd, repository_root,
                 repository_name, git_branch, git_sha, git_origin_url, model, model_provider,
                 codex_version, archived, rollout_path, source_db_path, source_path,
                 first_ingested_at, last_ingested_at
             ) VALUES (
-                :source_session_id, :source_type, :source_home, :client_source, :started_at,
+                :source_session_id, :source_type, :source_home, :client_source, :client_kind,
+                :subagent_source_kind, :source_parent_session_id, :started_at,
                 :updated_at,
                 :apparent_ended_at, :source_timezone_offset_minutes, :cwd, :repository_root,
                 :repository_name, :git_branch, :git_sha, :git_origin_url, :model,
@@ -1881,7 +1875,10 @@ def _upsert_session_metadata(
         connection.execute(
             """
             UPDATE source_sessions
-            SET client_source = :client_source, started_at = :started_at,
+            SET client_source = :client_source, client_kind = :client_kind,
+                subagent_source_kind = :subagent_source_kind,
+                source_parent_session_id = :source_parent_session_id,
+                started_at = :started_at,
                 updated_at = :updated_at,
                 apparent_ended_at = :apparent_ended_at,
                 source_timezone_offset_minutes = :source_timezone_offset_minutes,
@@ -1905,6 +1902,11 @@ def _session_values(session: NormalizedSourceSession) -> dict[str, object]:
         "source_type": session.source_type,
         "source_home": str(session.source_home),
         "client_source": session.client_source,
+        "client_kind": session.client_kind.value,
+        "subagent_source_kind": (
+            session.subagent_source_kind.value if session.subagent_source_kind else None
+        ),
+        "source_parent_session_id": session.source_parent_session_id,
         "started_at": _format_datetime(session.started_at),
         "updated_at": _format_datetime(session.updated_at),
         "apparent_ended_at": _format_datetime(session.apparent_ended_at),

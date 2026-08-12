@@ -9,7 +9,7 @@ from pathlib import Path
 
 from codex_insights.path_safety import UnsafeDestinationError, validate_write_target
 
-SCHEMA_VERSION = 16
+SCHEMA_VERSION = 17
 
 _MIGRATION_1 = """
 CREATE TABLE source_sessions (
@@ -812,6 +812,35 @@ CREATE INDEX token_events_source_order_idx
     ON token_events(source_session_id, source_ordinal);
 """
 
+_MIGRATION_17 = """
+ALTER TABLE source_sessions ADD COLUMN client_kind TEXT NOT NULL DEFAULT 'unknown'
+    CHECK (client_kind IN ('cli', 'editor', 'subagent', 'other', 'unknown'));
+ALTER TABLE source_sessions ADD COLUMN subagent_source_kind TEXT
+    CHECK (subagent_source_kind IS NULL OR subagent_source_kind IN (
+        'thread_spawn', 'guardian', 'other'
+    ));
+ALTER TABLE source_sessions ADD COLUMN source_parent_session_id TEXT;
+
+UPDATE source_sessions
+SET client_kind = CASE
+    WHEN client_source IS NULL OR TRIM(client_source) = '' THEN 'unknown'
+    WHEN SUBSTR(LTRIM(client_source), 1, 1) IN ('{', '[') THEN 'unknown'
+    WHEN LOWER(REPLACE(REPLACE(client_source, '-', '_'), ' ', '_'))
+         IN ('cli', 'terminal', 'command_line') THEN 'cli'
+    WHEN LOWER(REPLACE(REPLACE(client_source, '-', '_'), ' ', '_'))
+         IN ('editor', 'vscode', 'visual_studio_code', 'cursor', 'jetbrains', 'pycharm')
+         THEN 'editor'
+    ELSE 'other'
+END;
+
+UPDATE source_sessions
+SET client_source = NULL
+WHERE SUBSTR(LTRIM(client_source), 1, 1) IN ('{', '[');
+
+CREATE INDEX source_sessions_client_kind_idx ON source_sessions(client_kind);
+CREATE INDEX source_sessions_source_parent_idx ON source_sessions(source_parent_session_id);
+"""
+
 _MIGRATIONS = {
     1: _MIGRATION_1,
     2: _MIGRATION_2,
@@ -829,6 +858,7 @@ _MIGRATIONS = {
     14: _MIGRATION_14,
     15: _MIGRATION_15,
     16: _MIGRATION_16,
+    17: _MIGRATION_17,
 }
 
 

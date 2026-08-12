@@ -178,6 +178,24 @@ class CapabilityStatus(StrEnum):
     UNKNOWN = "unknown"
 
 
+class ClientKind(StrEnum):
+    """Stable client categories independent of Codex catalogue encodings."""
+
+    CLI = "cli"
+    EDITOR = "editor"
+    SUBAGENT = "subagent"
+    OTHER = "other"
+    UNKNOWN = "unknown"
+
+
+class SubagentSourceKind(StrEnum):
+    """Bounded explicit subagent origins recognized at the adapter boundary."""
+
+    THREAD_SPAWN = "thread_spawn"
+    GUARDIAN = "guardian"
+    OTHER = "other"
+
+
 @dataclass(frozen=True, slots=True)
 class CapabilityObservation:
     """Bounded evidence that a source feature is or is not observable."""
@@ -382,6 +400,9 @@ class NormalizedSourceSession:
     source_type: str
     source_home: Path
     client_source: str | None = None
+    client_kind: ClientKind = ClientKind.UNKNOWN
+    subagent_source_kind: SubagentSourceKind | None = None
+    source_parent_session_id: str | None = None
     started_at: datetime | None = None
     updated_at: datetime | None = None
     apparent_ended_at: datetime | None = None
