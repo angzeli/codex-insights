@@ -48,6 +48,13 @@ commands only, Git counts include HIGH-confidence associations, prompt counts ar
 origin-aware prompts, and outcome groups use the provenance-aware outcome classifier. Missing data
 and `unknown` classifications are retained rather than converted to zero or dropped.
 
+Task summaries separate the evidence basis from the resulting label. `prompt_backed`,
+`originated_activity_only`, `fallback_only`, and `no_origin_evidence` are a mutually exclusive
+partition of the selected sessions. Explicit child threads are reported as a separate, potentially
+overlapping provenance dimension. “Both UNKNOWN without prompt intent” identifies missing intent
+coverage; “prompt-backed UNKNOWN dimensions” identifies the much smaller deterministic-rule
+opportunity. Repository fallback is never described as prompt intent.
+
 The rules are a maintainable approximation of user intent, not an objective ground truth. Aggregate
 comparisons must show sample size, retain `unknown`, and avoid causal claims about prompt wording or
 task success.

@@ -133,6 +133,25 @@ def _render_metrics(title: str, metrics: TaskMetrics) -> None:
     table.add_row("UNKNOWN tasks", f"{metrics.unknown_task_count:,}")
     console.print(table)
 
+    evidence = metrics.evidence_coverage
+    coverage = Table(title="Origin-intent evidence coverage", show_header=False, box=None)
+    coverage.add_column("Basis")
+    coverage.add_column("Sessions", justify="right")
+    coverage.add_row("Prompt-backed", f"{evidence.prompt_backed:,}")
+    coverage.add_row("Originated activity only", f"{evidence.originated_activity_only:,}")
+    coverage.add_row("Repository fallback only", f"{evidence.fallback_only:,}")
+    coverage.add_row("No origin evidence", f"{evidence.no_origin_evidence:,}")
+    coverage.add_row("Explicit child threads", f"{evidence.subagent_sessions:,}")
+    coverage.add_row(
+        "Both UNKNOWN without prompt intent",
+        f"{evidence.both_unknown_without_prompt_intent:,}",
+    )
+    coverage.add_row(
+        "Prompt-backed UNKNOWN dimensions",
+        f"{evidence.prompt_backed_unknown_dimensions:,}",
+    )
+    console.print(coverage)
+
 
 def _count(value: int | None) -> str:
     return f"{value:,}" if value is not None else "unknown"

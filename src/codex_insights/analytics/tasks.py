@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import math
 import sqlite3
 from collections import Counter, defaultdict
@@ -32,6 +33,33 @@ class TaskFilters:
 
 
 @dataclass(frozen=True, slots=True)
+class TaskEvidenceCoverage:
+    """Mutually exclusive origin-evidence bases plus bounded diagnostic dimensions."""
+
+    prompt_backed: int
+    originated_activity_only: int
+    fallback_only: int
+    no_origin_evidence: int
+    subagent_sessions: int
+    both_unknown_without_prompt_intent: int
+    prompt_backed_unknown_dimensions: int
+
+    def to_dict(self) -> dict[str, int | str]:
+        return {
+            "prompt_backed": self.prompt_backed,
+            "originated_activity_only": self.originated_activity_only,
+            "fallback_only": self.fallback_only,
+            "no_origin_evidence": self.no_origin_evidence,
+            "subagent_sessions": self.subagent_sessions,
+            "both_unknown_without_prompt_intent": (
+                self.both_unknown_without_prompt_intent
+            ),
+            "prompt_backed_unknown_dimensions": self.prompt_backed_unknown_dimensions,
+            "partition_semantics": "mutually_exclusive_origin_evidence_basis",
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class TaskMetrics:
     session_count: int
     unknown_task_count: int
@@ -46,6 +74,7 @@ class TaskMetrics:
     logical_prompts: int
     sessions_with_prompt_features: int
     prompts_with_features: int
+    evidence_coverage: TaskEvidenceCoverage
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -62,6 +91,7 @@ class TaskMetrics:
             "logical_prompts": self.logical_prompts,
             "sessions_with_prompt_features": self.sessions_with_prompt_features,
             "prompts_with_features": self.prompts_with_features,
+            "evidence_coverage": self.evidence_coverage.to_dict(),
             "token_semantics": "reconciled_aggregate",
             "distribution_semantics": "observed_per_rollout",
             "command_semantics": "originated_events",
@@ -234,6 +264,13 @@ def _query(filters: TaskFilters) -> tuple[str, tuple[object, ...]]:
               AND command_fingerprint IS NOT NULL
             GROUP BY observed_session_id
         ),
+        originated_activity AS (
+            SELECT observed_session_id AS session_id, COUNT(*) AS activity_count
+            FROM tool_activity
+            WHERE provenance_status = 'origin'
+              AND origin_session_id = observed_session_id
+            GROUP BY observed_session_id
+        ),
         confirmed_commits AS (
             SELECT session_id, COUNT(*) AS commit_count
             FROM session_commit_associations
@@ -264,8 +301,11 @@ def _query(filters: TaskFilters) -> tuple[str, tuple[object, ...]]:
                COALESCE(tasks.action, 'unknown') AS action,
                COALESCE(tasks.domain, 'unknown') AS domain,
                COALESCE(tasks.confidence, 'low') AS task_confidence,
+               COALESCE(tasks.evidence_json, '["insufficient_origin_intent"]')
+                   AS task_evidence_json,
                usage.aggregate_total_tokens, usage.observed_total_tokens,
                COALESCE(commands.command_count, 0) AS command_count,
+               COALESCE(activity.activity_count, 0) AS activity_count,
                COALESCE(commits.commit_count, 0) AS commit_count,
                COALESCE(prompts.prompt_count, 0) AS prompt_count,
                COALESCE(features.feature_prompt_count, 0) AS feature_prompt_count,
@@ -277,15 +317,20 @@ def _query(filters: TaskFilters) -> tuple[str, tuple[object, ...]]:
                COALESCE(features.multiple_commit_request, 0) AS multiple_commit_request,
                COALESCE(features.explicit_non_goals, 0) AS explicit_non_goals,
                COALESCE(features.read_only_constraint, 0) AS read_only_constraint,
+               CASE WHEN relationships.child_session_id IS NULL THEN 0 ELSE 1 END
+                   AS is_subagent,
                COALESCE(outcomes.outcome, 'unknown') AS outcome
         FROM source_sessions AS sessions
         LEFT JOIN repositories AS repositories ON repositories.id = sessions.repository_id
         LEFT JOIN session_tasks AS tasks ON tasks.session_id = sessions.id
         LEFT JOIN accounted_usage AS usage ON usage.source_session_id = sessions.id
         LEFT JOIN originated_commands AS commands ON commands.session_id = sessions.id
+        LEFT JOIN originated_activity AS activity ON activity.session_id = sessions.id
         LEFT JOIN confirmed_commits AS commits ON commits.session_id = sessions.id
         LEFT JOIN prompt_counts AS prompts ON prompts.session_id = sessions.id
         LEFT JOIN prompt_feature_summary AS features ON features.session_id = sessions.id
+        LEFT JOIN thread_relationships AS relationships
+            ON relationships.child_session_id = sessions.id
         LEFT JOIN session_outcomes AS outcomes ON outcomes.session_id = sessions.id
         {where}
         ORDER BY sessions.started_at IS NULL, sessions.started_at, sessions.id
@@ -323,7 +368,54 @@ def _metrics(rows: list[sqlite3.Row]) -> TaskMetrics:
             int(row["feature_prompt_count"]) > 0 for row in rows
         ),
         prompts_with_features=sum(int(row["feature_prompt_count"]) for row in rows),
+        evidence_coverage=_evidence_coverage(rows),
     )
+
+
+def _evidence_coverage(rows: list[sqlite3.Row]) -> TaskEvidenceCoverage:
+    bases: Counter[str] = Counter()
+    for row in rows:
+        prompt_backed = int(row["prompt_count"]) > 0
+        originated_activity = (
+            int(row["activity_count"]) > 0 or int(row["commit_count"]) > 0
+        )
+        evidence = _task_evidence(row["task_evidence_json"])
+        if prompt_backed:
+            bases["prompt_backed"] += 1
+        elif originated_activity:
+            bases["originated_activity_only"] += 1
+        elif "fallback_repository_name" in evidence:
+            bases["fallback_only"] += 1
+        else:
+            bases["no_origin_evidence"] += 1
+    return TaskEvidenceCoverage(
+        prompt_backed=bases["prompt_backed"],
+        originated_activity_only=bases["originated_activity_only"],
+        fallback_only=bases["fallback_only"],
+        no_origin_evidence=bases["no_origin_evidence"],
+        subagent_sessions=sum(bool(row["is_subagent"]) for row in rows),
+        both_unknown_without_prompt_intent=sum(
+            int(row["prompt_count"]) == 0
+            and row["action"] == "unknown"
+            and row["domain"] == "unknown"
+            for row in rows
+        ),
+        prompt_backed_unknown_dimensions=sum(
+            int(row["prompt_count"]) > 0
+            and (row["action"] == "unknown" or row["domain"] == "unknown")
+            for row in rows
+        ),
+    )
+
+
+def _task_evidence(value: object) -> tuple[str, ...]:
+    try:
+        parsed = json.loads(str(value))
+    except (TypeError, ValueError):
+        return ()
+    if not isinstance(parsed, list):
+        return ()
+    return tuple(str(item) for item in parsed if isinstance(item, str))
 
 
 def _prompt_feature_correlations(
