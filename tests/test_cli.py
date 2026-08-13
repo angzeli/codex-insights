@@ -76,7 +76,7 @@ def test_package_and_project_versions_are_consistent() -> None:
         (Path(__file__).parents[1] / "pyproject.toml").read_text(encoding="utf-8")
     )
 
-    assert __version__ == "1.1.0"
+    assert __version__ == "1.2.0"
     assert metadata["project"]["version"] == __version__
 
 

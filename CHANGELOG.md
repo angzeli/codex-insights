@@ -4,27 +4,45 @@ All notable changes to Codex Insights are documented here.
 
 ## Unreleased
 
+## 1.2.0 - 2026-08-13
+
+### Architecture and evidence quality
+
 - normalized scalar and structured Codex client sources into stable client/subagent kinds without
   persisting raw structured encodings;
 - separated turn lifecycle from task outcomes and added strongly evidenced outcome coverage;
-- made incremental reconciliation dependency-aware while retaining explicit stage timings and
-  unchanged-source idempotency;
 - classified source-drift observations by risk/capability with bounded first/last/newly-seen
   diagnostics and no raw payload values;
 - stabilized Git provenance with ancestry-qualified MEDIUM evidence, bounded LOW candidates,
   omitted-candidate coverage, and ref-state invalidation;
 - added derived-schema migrations 17-21 for source kinds, outcome/lifecycle semantics, diagnostics,
-  Git candidate state, effective tool timestamps, and measured analytics indexes;
+  Git candidate state, effective tool timestamps, and measured analytics indexes.
+
+### Performance and interpretability
+
+- made incremental reconciliation dependency-aware while retaining explicit stage timings and
+  unchanged-source idempotency;
 - aggregated tool analytics in SQL and removed per-repository task-query loops from reports and the
-  static dashboard.
+  static dashboard;
 - decomposed task-taxonomy coverage into prompt-backed, originated-activity-only,
-  repository-fallback-only, and no-origin-evidence populations without broadening classifier rules;
+  repository-fallback-only, and no-origin-evidence populations without broadening classifier rules.
+
+### Accessibility, diagnostics, and portability
+
 - surfaced source/index lag, latest successful indexing, missing rollout, compatibility, token
   lineage, and event-provenance summaries in human `doctor --deep` output;
 - added visible keyboard focus, 44-pixel controls, WCAG AA light-theme contrast, and programmatic
   table names/scoped headers to static dashboards and HTML reports;
 - added focused Python 3.11/3.14 Windows wheel-install workflow coverage and made benchmark memory
   reporting explicitly unavailable when the POSIX `resource` module is absent.
+
+### Conservative scope
+
+- retained existing Git, taxonomy, outcome, token-lineage, and provenance confidence thresholds;
+- deferred versioned JSON for operational `index` and `db-info` commands until a concrete automation
+  consumer and stable error/schema contract exist;
+- intentionally avoided a wholesale orchestration-module refactor because its release risk exceeded
+  demonstrated user benefit.
 
 ## 1.1.0 - 2026-08-12
 

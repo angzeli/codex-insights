@@ -6,9 +6,9 @@ questions about activity, token usage, repositories, models, prompts, tools, Git
 outcomes, and task patterns without uploading a working history.
 
 Codex Insights is publicly released; published versions and release notes are available on
-[GitHub Releases](https://github.com/angzeli/codex-insights/releases). This development branch keeps
-the released `1.1.0` package version while v1.2 forensic refinements remain under
-[Unreleased](CHANGELOG.md); version changes are reserved for release preparation.
+[GitHub Releases](https://github.com/angzeli/codex-insights/releases). The current package version is
+`1.2.0`; its forensic refinements and conservative evidence semantics are documented in the
+[changelog](CHANGELOG.md).
 
 ![Synthetic Codex Insights dashboard](docs/assets/dashboard-synthetic.png)
 
