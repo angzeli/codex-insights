@@ -13,6 +13,12 @@ from typing import Any
 
 from codex_insights.daily_ledger.config import LedgerConfig, ensure_state_directories
 from codex_insights.daily_ledger.privacy import assert_remote_safe
+from codex_insights.daily_ledger.report_policy import (
+    ReportingWindow,
+    ensure_report_policy,
+    load_reporting_policy,
+    reporting_window_for_date,
+)
 from codex_insights.daily_ledger.schema_validation import validate_generated_document
 from codex_insights.path_safety import atomic_write_text
 
@@ -51,11 +57,14 @@ def export_day(config: LedgerConfig, day: date) -> ExportResult:
 
     ensure_state_directories(config.paths)
     initialize_checkout_contract(config)
+    policy = load_reporting_policy(config)
+    window = reporting_window_for_date(policy, day)
     day_text = day.isoformat()
     destination = _day_directory(config.ledger_checkout, day)
     sessions_directory = destination / "sessions"
     slices = _cached_slices(config, day_text)
     previous_manifest = _load_object(destination / "manifest.json")
+    _validate_existing_window(previous_manifest, window)
     previous_revision = _positive_int(previous_manifest.get("revision")) or 0
     previous_records = _existing_session_records(sessions_directory)
     raw_records = {
@@ -63,6 +72,8 @@ def export_day(config: LedgerConfig, day: date) -> ExportResult:
         for key, value in slices.items()
         if isinstance(value.get("record"), dict)
     }
+    for record in raw_records.values():
+        _validate_record_window(record, window)
     new_keys = sorted(set(raw_records) - set(previous_records))
     changed_keys = sorted(
         key
@@ -89,7 +100,7 @@ def export_day(config: LedgerConfig, day: date) -> ExportResult:
     events = _events(slices, revision=revision)
     summary = _summary(
         day_text,
-        config=config,
+        window=window,
         generated_at=generated_at,
         revision=revision,
         records=records,
@@ -130,7 +141,7 @@ def export_day(config: LedgerConfig, day: date) -> ExportResult:
     manifest: dict[str, object] = {
         "schema_version": MANIFEST_SCHEMA,
         "date": day_text,
-        "timezone": config.timezone,
+        **window.identity(),
         "generated_at": generated_at,
         "revision": revision,
         "device_id": config.device_id,
@@ -167,7 +178,13 @@ def export_day(config: LedgerConfig, day: date) -> ExportResult:
     atomic_write_text(summary_path, _pretty(summary), overwrite=True, create_parents=True)
     atomic_write_text(events_path, event_text, overwrite=True, create_parents=True)
     atomic_write_text(manifest_path, _pretty(manifest), overwrite=True, create_parents=True)
-    latest_path = _write_latest_status(config, day, revision, sync_state, generated_at)
+    latest_path = _write_latest_status(
+        config,
+        window,
+        revision,
+        sync_state,
+        generated_at,
+    )
     generated_paths.append(latest_path)
     return ExportResult(
         date=day_text,
@@ -188,7 +205,6 @@ def initialize_checkout_contract(config: LedgerConfig) -> tuple[Path, ...]:
         checkout / "README.md": _LEDGER_README,
         checkout / "SCHEMA.md": _SCHEMA_README,
         checkout / "config" / "project-aliases.yaml": _PROJECT_ALIASES,
-        checkout / "config" / "report-policy.yaml": _REPORT_POLICY,
     }
     for schema_name in _SCHEMA_FILES:
         resource = files("codex_insights.daily_ledger.schemas").joinpath(schema_name)
@@ -197,7 +213,8 @@ def initialize_checkout_contract(config: LedgerConfig) -> tuple[Path, ...]:
         if path.exists():
             continue
         atomic_write_text(path, payload, overwrite=False, create_parents=True)
-    return tuple(static)
+    policy_path = ensure_report_policy(config)
+    return (*tuple(static), policy_path)
 
 
 def cached_dates(config: LedgerConfig) -> tuple[date, ...]:
@@ -249,7 +266,7 @@ def _existing_session_records(directory: Path) -> dict[str, dict[str, object]]:
 def _summary(
     day: str,
     *,
-    config: LedgerConfig,
+    window: ReportingWindow,
     generated_at: str,
     revision: int,
     records: dict[str, dict[str, object]],
@@ -277,7 +294,7 @@ def _summary(
     return {
         "schema_version": SUMMARY_SCHEMA,
         "date": day,
-        "timezone": config.timezone,
+        **window.identity(),
         "generated_at": generated_at,
         "revision": revision,
         "coverage": {
@@ -404,7 +421,7 @@ def _observed_bounds(records: dict[str, dict[str, object]]) -> tuple[str | None,
 
 def _write_latest_status(
     config: LedgerConfig,
-    day: date,
+    window: ReportingWindow,
     revision: int,
     sync_state: str,
     generated_at: str,
@@ -412,16 +429,16 @@ def _write_latest_status(
     path = config.ledger_checkout / "status" / "latest.json"
     existing = _load_object(path)
     existing_date = existing.get("date")
-    if isinstance(existing_date, str) and existing_date > day.isoformat():
+    if isinstance(existing_date, str) and existing_date > window.report_date.isoformat():
         return path
     payload = {
         "schema_version": "codex-latest-status-v1",
-        "date": day.isoformat(),
-        "timezone": config.timezone,
+        "date": window.report_date.isoformat(),
+        **window.identity(),
         "generated_at": generated_at,
         "revision": revision,
         "sync_state": sync_state,
-        "manifest": f"ledger/codex/{day:%Y/%m/%d}/manifest.json",
+        "manifest": f"ledger/codex/{window.report_date:%Y/%m/%d}/manifest.json",
     }
     assert_remote_safe(payload)
     atomic_write_text(path, _pretty(payload), overwrite=True, create_parents=True)
@@ -430,6 +447,25 @@ def _write_latest_status(
 
 def _day_directory(checkout: Path, day: date) -> Path:
     return checkout / "ledger" / "codex" / f"{day:%Y}" / f"{day:%m}" / f"{day:%d}"
+
+
+def _validate_existing_window(
+    previous_manifest: dict[str, object],
+    window: ReportingWindow,
+) -> None:
+    if not previous_manifest or "report_date" not in previous_manifest:
+        return
+    expected = window.identity()
+    if any(previous_manifest.get(key) != value for key, value in expected.items()):
+        raise ValueError(
+            "Existing manifest reporting window differs from the effective historical policy"
+        )
+
+
+def _validate_record_window(record: dict[str, object], window: ReportingWindow) -> None:
+    expected = window.identity()
+    if any(record.get(key) != value for key, value in expected.items()):
+        raise ValueError("Cached session slice does not match the effective reporting window")
 
 
 def _load_object(path: Path) -> dict[str, object]:
@@ -497,15 +533,11 @@ _SCHEMA_README = """# Ledger schema
 
 The V1 JSON Schemas in `schema/` describe per-session slices, deterministic daily summaries, and
 daily manifests. `events.jsonl` is deliberately minimal and contains only event identity, type,
-time, source hash, stable session key, and revision. Unknown evidence remains explicit.
+time, source hash, stable session key, and revision. `config/report-policy.yaml` is the committed
+source of truth for reporting windows. Manifests permanently record the policy and half-open window
+used for each report date. Unknown evidence remains explicit.
 """
 
 _PROJECT_ALIASES = """# Optional display-name overrides. Keep aliases free of local paths.
 aliases: {}
-"""
-
-_REPORT_POLICY = """schema_version: "1.0"
-reports_directory: null
-assistant_claims_are_verified_evidence: false
-unknown_outcomes_remain_unknown: true
 """

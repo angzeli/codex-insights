@@ -30,17 +30,21 @@ do not modify `~/.codex/hooks.json` until the explicit `manage_hooks.py install`
    "$HOME/.local/share/codex-insights/venv/bin/python" -m pip install -e "/Users/liangze/Desktop/squiddy tools/codex-insights"
    ```
 
-3. Install the sample config and helper files:
+3. Install the sample local config, committed report policy, and helper files:
 
    ```bash
    mkdir -p "$HOME/.config/codex-insights" "$HOME/.local/share/codex-insights/daily-ledger"
    install -m 0600 examples/daily-ledger/daily-ledger.toml "$HOME/.config/codex-insights/daily-ledger.toml"
+   mkdir -p "/Users/liangze/Documents/angze-daily-ledger/config"
+   test -e "/Users/liangze/Documents/angze-daily-ledger/config/report-policy.yaml" || \
+     install -m 0644 examples/daily-ledger/report-policy.yaml "/Users/liangze/Documents/angze-daily-ledger/config/report-policy.yaml"
    install -m 0755 examples/daily-ledger/capture_hook.py "$HOME/.local/share/codex-insights/daily-ledger/capture_hook.py"
    install -m 0755 examples/daily-ledger/manage_hooks.py "$HOME/.local/share/codex-insights/daily-ledger/manage_hooks.py"
    ```
 
-4. Confirm `device_id`, checkout, remote, branch, timezone, and `push_enabled` in
-   `~/.config/codex-insights/daily-ledger.toml`. Do not put credentials in this file.
+4. Confirm `device_id`, checkout, remote, branch, and `push_enabled` in
+   `~/.config/codex-insights/daily-ledger.toml`. Confirm the reporting periods in the committed
+   `config/report-policy.yaml` inside the ledger checkout. Do not put credentials in either file.
 
 5. Run the bounded doctor. Its authentication result checks only local Git identity and remote
    configuration; it deliberately does not make a network request:
@@ -79,6 +83,44 @@ do not modify `~/.codex/hooks.json` until the explicit `manage_hooks.py install`
     "$HOME/.local/share/codex-insights/venv/bin/codex-insights" daily-ledger doctor
     "$HOME/.local/share/codex-insights/venv/bin/codex-insights" daily-ledger flush
     ```
+
+## Reporting windows
+
+The committed `config/report-policy.yaml` is the sole source of truth for both the Codex exporter
+and the later ChatGPT reporter. The default policy labels a report with the local calendar date on
+which its window ends. For example, `Daily Report — 2026-09-02` covers the half-open interval:
+
+```text
+2026-09-01T23:00:00+08:00 <= timestamp < 2026-09-02T23:00:00+08:00
+```
+
+Every manifest and summary records `report_date`, the IANA `timezone`, `day_boundary_local`,
+`window_start`, and `window_end`. Treat the manifest as authoritative; do not recompute historical
+windows from the latest policy. Timestamped evidence is assigned to exactly one window, so an event
+at `22:59:59` belongs to the report ending that date and an event at exactly `23:00:00` belongs to
+the next report. When a session crosses the boundary, its timestamped evidence is sliced across the
+two reports; evidence without precise attribution remains uncertain.
+
+To change timezone later, append a new effective period instead of replacing an old one:
+
+```yaml
+periods:
+  - effective_from_report_date: "2026-09-02"
+    timezone: "Asia/Singapore"
+    day_boundary_local: "23:00"
+  - effective_from_report_date: "2026-10-01"
+    timezone: "Europe/London"
+    day_boundary_local: "23:00"
+```
+
+The transition report starts at the previous manifest's `window_end` and ends at the next
+configured 23:00 in the new IANA timezone. It may therefore be shorter or longer than 24 hours,
+without leaving a gap or overlap. Subsequent reports resume normal local 23:00-to-23:00 windows,
+including the correct daylight-saving offsets supplied by Python `zoneinfo`.
+
+If upgrading from the earlier midnight-based daily-ledger implementation, choose the historical
+effective date deliberately and rerun the affected backfill with `--no-push` before inspection.
+Existing caches with a different window identity fail closed rather than being silently reassigned.
 
 ## Routine operations
 
@@ -119,7 +161,7 @@ to `failed/` with content-free error metadata instead of disappearing. Inspect c
 do not copy failed local jobs into the ledger repository.
 
 If the Mac is offline overnight, Stop jobs remain local and a later flush rebuilds the affected
-calendar dates. The cloud report cannot see unsynchronized activity until a later successful push.
+reporting dates. The cloud report cannot see unsynchronized activity until a later successful push.
 Late evidence increments that date's manifest revision and records new or changed session keys.
 
 ## Troubleshooting
@@ -138,8 +180,9 @@ Late evidence increments that date's manifest revision and records new or change
 - **Hook not trusted:** reopen Codex's hook trust review and verify the helper path before approval.
 - **Multiple existing hook definitions:** use `manage_hooks.py install`; matching hooks may run
   concurrently, and the utility appends only the missing daily-ledger groups.
-- **Timezone boundary issues:** keep `timezone = "Asia/Singapore"`; event timestamps determine daily
-  slices, while missing timestamps are marked with capture-time fallback coverage.
+- **Timezone boundary issues:** inspect the committed `config/report-policy.yaml`, then run doctor to
+  see the active timezone, boundary, current window, next boundary, and policy-period validation.
+  Event timestamps determine slices; missing timestamps retain capture-time fallback uncertainty.
 
 No `reports/` directory is generated. The read-only ChatGPT GitHub connection can later read this
 private repository, while reports remain in the persistent ChatGPT scheduled-task thread.

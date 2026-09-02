@@ -7,8 +7,9 @@ import subprocess
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import pytest
 from typer.testing import CliRunner
@@ -39,6 +40,13 @@ from codex_insights.daily_ledger.queue import (
     capture_hook_payload,
     run_capture_hook,
 )
+from codex_insights.daily_ledger.report_policy import (
+    DEFAULT_REPORT_POLICY_TEXT,
+    ReportPolicyError,
+    parse_reporting_policy,
+    report_date_for_timestamp,
+    reporting_window_for_date,
+)
 from codex_insights.daily_ledger.schema_validation import validate_generated_document
 from codex_insights.daily_ledger.service import backfill_range, flush_queue
 
@@ -56,7 +64,6 @@ def test_xdg_defaults_and_v1_config_loading(tmp_path: Path) -> None:
     config = load_ledger_config(config_path)
 
     assert config.schema_version == LEDGER_SCHEMA_VERSION
-    assert config.timezone == "Asia/Singapore"
     assert config.device_id == "synthetic-device"
 
 
@@ -66,6 +73,112 @@ def test_config_rejects_credentials_and_unknown_keys(tmp_path: Path) -> None:
 
     with pytest.raises(LedgerConfigurationError, match="Unsupported"):
         load_ledger_config(path)
+
+
+def test_legacy_local_timezone_is_ignored_as_a_reporting_source(tmp_path: Path) -> None:
+    path = _write_config(tmp_path, push_enabled=False)
+    path.write_text(path.read_text() + 'timezone = "Europe/London"\n', encoding="utf-8")
+
+    config = load_ledger_config(path)
+
+    assert not hasattr(config, "timezone")
+
+
+def test_asia_singapore_reporting_window_ends_at_2300() -> None:
+    policy = parse_reporting_policy(DEFAULT_REPORT_POLICY_TEXT)
+
+    window = reporting_window_for_date(policy, date(2026, 9, 2))
+
+    assert window.identity() == {
+        "report_date": "2026-09-02",
+        "timezone": "Asia/Singapore",
+        "day_boundary_local": "23:00",
+        "window_start": "2026-09-01T23:00:00+08:00",
+        "window_end": "2026-09-02T23:00:00+08:00",
+    }
+
+
+def test_event_at_225959_belongs_to_report_ending_that_date() -> None:
+    policy = parse_reporting_policy(DEFAULT_REPORT_POLICY_TEXT)
+    event = datetime(2026, 9, 2, 22, 59, 59, tzinfo=ZoneInfo("Asia/Singapore"))
+
+    assert report_date_for_timestamp(policy, event) == date(2026, 9, 2)
+
+
+def test_event_exactly_at_230000_belongs_to_next_report() -> None:
+    policy = parse_reporting_policy(DEFAULT_REPORT_POLICY_TEXT)
+    event = datetime(2026, 9, 2, 23, 0, 0, tzinfo=ZoneInfo("Asia/Singapore"))
+
+    assert report_date_for_timestamp(policy, event) == date(2026, 9, 3)
+
+
+def test_historical_report_uses_period_effective_for_its_report_date() -> None:
+    policy = parse_reporting_policy(_transition_policy())
+
+    singapore = reporting_window_for_date(policy, date(2026, 9, 30))
+    london = reporting_window_for_date(policy, date(2026, 10, 1))
+
+    assert singapore.timezone == "Asia/Singapore"
+    assert london.timezone == "Europe/London"
+
+
+def test_singapore_to_london_transition_has_no_gap_or_overlap() -> None:
+    policy = parse_reporting_policy(_transition_policy())
+    previous = reporting_window_for_date(policy, date(2026, 9, 30))
+    transition = reporting_window_for_date(policy, date(2026, 10, 1))
+
+    assert transition.window_start == previous.window_end
+
+
+def test_timezone_transition_windows_may_be_longer_or_shorter_than_24_hours() -> None:
+    policy = parse_reporting_policy(
+        _policy_text(
+            ("2026-09-02", "Asia/Singapore"),
+            ("2026-10-01", "Europe/London"),
+            ("2026-11-01", "Asia/Singapore"),
+        )
+    )
+
+    longer = reporting_window_for_date(policy, date(2026, 10, 1))
+    shorter = reporting_window_for_date(policy, date(2026, 11, 1))
+
+    assert longer.window_end.astimezone(UTC) - longer.window_start.astimezone(UTC) > timedelta(
+        hours=24
+    )
+    assert shorter.window_end.astimezone(UTC) - shorter.window_start.astimezone(UTC) < timedelta(
+        hours=24
+    )
+
+
+def test_europe_london_dst_uses_the_correct_local_offsets() -> None:
+    policy = parse_reporting_policy(
+        _policy_text(("2026-01-01", "Europe/London"))
+    )
+
+    window = reporting_window_for_date(policy, date(2026, 3, 29))
+
+    assert window.identity()["window_start"] == "2026-03-28T23:00:00+00:00"
+    assert window.identity()["window_end"] == "2026-03-29T23:00:00+01:00"
+    assert window.window_end.astimezone(UTC) - window.window_start.astimezone(UTC) == timedelta(
+        hours=23
+    )
+
+
+def test_overlapping_effective_periods_are_rejected() -> None:
+    text = _policy_text(
+        ("2026-09-02", "Asia/Singapore"),
+        ("2026-09-02", "Europe/London"),
+    )
+
+    with pytest.raises(ReportPolicyError, match="strictly ordered"):
+        parse_reporting_policy(text)
+
+
+def test_fixed_utc_offset_is_rejected_as_an_iana_timezone() -> None:
+    text = _policy_text(("2026-09-02", "UTC+8"))
+
+    with pytest.raises(ReportPolicyError, match="Invalid IANA timezone"):
+        parse_reporting_policy(text)
 
 
 def test_stop_capture_is_atomic_and_stdout_is_json(tmp_path: Path) -> None:
@@ -278,10 +391,10 @@ def test_missing_event_timestamp_preserves_capture_fallback(tmp_path: Path) -> N
     assert record["timestamp_precision"] == "capture_fallback"
 
 
-def test_cross_midnight_splits_without_double_counting(tmp_path: Path) -> None:
+def test_cross_reporting_boundary_splits_without_double_counting(tmp_path: Path) -> None:
     records = (
-        *_planning_records(timestamp="2026-09-01T15:59:50Z"),
-        *_validation_records(timestamp="2026-09-01T16:00:10Z", call_id="validate-2"),
+        *_planning_records(timestamp="2026-09-01T14:59:50Z"),
+        *_validation_records(timestamp="2026-09-01T15:00:10Z", call_id="validate-2"),
     )
     config = _direct_config(tmp_path)
     transcript = _write_rollout(tmp_path / "codex" / "session.jsonl", records)
@@ -384,7 +497,16 @@ def test_representative_outputs_validate_against_packaged_schemas(tmp_path: Path
 
 
 def test_checked_in_examples_validate_against_packaged_schemas() -> None:
-    sample_directory = Path(__file__).parents[1] / "examples" / "daily-ledger" / "sample"
+    example_directory = Path(__file__).parents[1] / "examples" / "daily-ledger"
+    sample_directory = example_directory / "sample"
+    policy = parse_reporting_policy(
+        (example_directory / "report-policy.yaml").read_text(encoding="utf-8")
+    )
+    local_config = (example_directory / "daily-ledger.toml").read_text(encoding="utf-8")
+
+    assert policy.periods[0].timezone == "Asia/Singapore"
+    assert policy.periods[0].boundary_text == "23:00"
+    assert "timezone" not in local_config
     for filename, schema in (
         ("session.json", "codex-session-v1.schema.json"),
         ("summary.json", "codex-daily-summary-v1.schema.json"),
@@ -447,6 +569,25 @@ def test_no_op_export_does_not_increment_revision(tmp_path: Path) -> None:
 
     assert result.changed is False
     assert after["revision"] == before["revision"]
+
+
+def test_historical_manifest_keeps_timezone_after_future_policy_change(
+    tmp_path: Path,
+) -> None:
+    config = _direct_config(tmp_path)
+    _queue_records(config, tmp_path, _validation_records())
+    flush_queue(config, no_push=True)
+    manifest_path = next(config.ledger_checkout.rglob("manifest.json"))
+    before = json.loads(manifest_path.read_text(encoding="utf-8"))
+    _write_report_policy(config, _transition_policy())
+
+    result = export_day(config, date(2026, 9, 1))
+    after = json.loads(manifest_path.read_text(encoding="utf-8"))
+
+    assert result.changed is False
+    assert after == before
+    assert after["timezone"] == "Asia/Singapore"
+    assert after["window_end"] == "2026-09-01T23:00:00+08:00"
 
 
 def test_export_initializes_exact_static_contract_without_reports(tmp_path: Path) -> None:
@@ -571,6 +712,44 @@ def test_doctor_detects_injected_absolute_path_leakage(tmp_path: Path) -> None:
     assert any(item.category == "absolute_path" for item in report.leakage_findings)
 
 
+def test_doctor_reports_active_window_and_invalid_period_definitions(
+    tmp_path: Path,
+) -> None:
+    config = _direct_config(tmp_path)
+    _write_report_policy(config, _transition_policy())
+
+    report = run_doctor(
+        config,
+        codex_home=tmp_path / "synthetic-codex-home",
+        now=datetime(2026, 9, 30, 16, 0, tzinfo=UTC),
+    )
+
+    assert report.timezone == "Europe/London"
+    assert report.day_boundary_local == "23:00"
+    assert report.current_report_date == "2026-10-01"
+    assert report.current_window_start == "2026-09-30T23:00:00+08:00"
+    assert report.current_window_end == "2026-10-01T23:00:00+01:00"
+    assert report.next_reporting_boundary == report.current_window_end
+    assert report.timezone_valid is True
+    assert report.reporting_periods_valid is True
+
+    _write_report_policy(
+        config,
+        _policy_text(
+            ("2026-09-02", "Asia/Singapore"),
+            ("2026-09-02", "Europe/London"),
+        ),
+    )
+    invalid = run_doctor(
+        config,
+        codex_home=tmp_path / "synthetic-codex-home",
+        now=datetime(2026, 9, 30, 16, 0, tzinfo=UTC),
+    )
+    assert invalid.timezone_valid is False
+    assert invalid.reporting_periods_valid is False
+    assert invalid.reporting_policy_error is not None
+
+
 def test_backfill_uses_synthetic_inventory_and_retains_no_push_jobs(tmp_path: Path) -> None:
     config = _direct_config(tmp_path)
     codex_home = tmp_path / "codex-home"
@@ -609,6 +788,57 @@ def test_backfill_uses_synthetic_inventory_and_retains_no_push_jobs(tmp_path: Pa
     assert tuple(config.ledger_checkout.rglob("sessions/*.json"))
 
 
+def test_backfill_uses_policy_effective_for_historical_report_date(
+    tmp_path: Path,
+) -> None:
+    config = _direct_config(tmp_path)
+    _write_report_policy(config, _transition_policy())
+    codex_home = tmp_path / "codex-home"
+    transcript = _write_rollout(
+        codex_home / "sessions" / "london-backfill.jsonl",
+        _validation_records(timestamp="2026-10-01T21:30:00Z"),
+    )
+    with sqlite3.connect(codex_home / "state_1.sqlite") as connection:
+        connection.executescript(
+            """
+            CREATE TABLE threads (
+                id TEXT PRIMARY KEY, rollout_path TEXT, created_at TEXT,
+                updated_at TEXT, source TEXT, cwd TEXT, archived INTEGER
+            );
+            """
+        )
+        connection.execute(
+            "INSERT INTO threads VALUES (?, ?, ?, ?, ?, ?, 0)",
+            (
+                "london-backfill-session",
+                str(transcript.relative_to(codex_home)),
+                "2026-10-01T21:00:00Z",
+                "2026-10-01T21:40:00Z",
+                "cli",
+                str(tmp_path / "project"),
+            ),
+        )
+
+    result = backfill_range(
+        config,
+        since=date(2026, 10, 1),
+        until=date(2026, 10, 1),
+        codex_home=codex_home,
+        no_push=True,
+    )
+    manifest = json.loads(
+        (
+            config.ledger_checkout
+            / "ledger/codex/2026/10/01/manifest.json"
+        ).read_text(encoding="utf-8")
+    )
+
+    assert result.processed_jobs == 1
+    assert manifest["report_date"] == "2026-10-01"
+    assert manifest["timezone"] == "Europe/London"
+    assert manifest["window_start"] == "2026-09-30T23:00:00+08:00"
+
+
 def test_daily_ledger_cli_help_is_registered() -> None:
     for command in ("doctor", "capture-hook", "flush", "export", "backfill"):
         result = runner.invoke(app, ["daily-ledger", command, "--help"])
@@ -623,6 +853,47 @@ def test_privacy_scanner_flags_forbidden_remote_fields() -> None:
     ]
 
 
+def _transition_policy() -> str:
+    return _policy_text(
+        ("2026-09-02", "Asia/Singapore"),
+        ("2026-10-01", "Europe/London"),
+    )
+
+
+def _policy_text(*periods: tuple[str, str]) -> str:
+    lines = [
+        'schema_version: "1.0"',
+        'report_date_label: "window_end_local_date"',
+        "",
+        "periods:",
+    ]
+    for effective, timezone in periods:
+        lines.extend(
+            (
+                f'  - effective_from_report_date: "{effective}"',
+                f'    timezone: "{timezone}"',
+                '    day_boundary_local: "23:00"',
+            )
+        )
+    lines.extend(
+        (
+            "",
+            "reports_directory: null",
+            "assistant_claims_are_verified_evidence: false",
+            "unknown_outcomes_remain_unknown: true",
+            "",
+        )
+    )
+    return "\n".join(lines)
+
+
+def _write_report_policy(config: LedgerConfig, text: str) -> Path:
+    path = config.ledger_checkout / "config" / "report-policy.yaml"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8")
+    return path
+
+
 def _direct_config(tmp_path: Path, *, push_enabled: bool = False) -> LedgerConfig:
     paths = LedgerPaths(
         config=tmp_path / "config" / "daily-ledger.toml",
@@ -631,7 +902,6 @@ def _direct_config(tmp_path: Path, *, push_enabled: bool = False) -> LedgerConfi
     )
     return LedgerConfig(
         schema_version="1.0",
-        timezone="Asia/Singapore",
         device_id="synthetic-device",
         ledger_checkout=tmp_path / "ledger",
         remote="origin",
@@ -648,7 +918,6 @@ def _write_config(tmp_path: Path, *, push_enabled: bool) -> Path:
         "\n".join(
             (
                 'schema_version = "1.0"',
-                'timezone = "Asia/Singapore"',
                 'device_id = "synthetic-device"',
                 f'ledger_checkout = "{config.ledger_checkout}"',
                 'remote = "origin"',

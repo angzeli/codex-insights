@@ -7,10 +7,8 @@ import tomllib
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 LEDGER_SCHEMA_VERSION = "1.0"
-DEFAULT_TIMEZONE = "Asia/Singapore"
 CONFIG_ENVIRONMENT_VARIABLE = "CODEX_INSIGHTS_DAILY_LEDGER_CONFIG"
 
 
@@ -71,18 +69,12 @@ class LedgerConfig:
     """Validated V1 configuration without credentials."""
 
     schema_version: str
-    timezone: str
     device_id: str
     ledger_checkout: Path
     remote: str
     branch: str
     push_enabled: bool
     paths: LedgerPaths
-
-    @property
-    def zone(self) -> ZoneInfo:
-        return ZoneInfo(self.timezone)
-
 
 def default_ledger_paths(
     *,
@@ -151,11 +143,6 @@ def load_ledger_config(
             f"Unsupported daily-ledger schema {schema_version!r}; "
             f"expected {LEDGER_SCHEMA_VERSION!r}"
         )
-    timezone = _required_string(raw, "timezone")
-    try:
-        ZoneInfo(timezone)
-    except ZoneInfoNotFoundError as exc:
-        raise LedgerConfigurationError(f"Unknown timezone: {timezone}") from exc
     device_id = _safe_identifier(_required_string(raw, "device_id"), "device_id")
     remote = _safe_git_name(_required_string(raw, "remote"), "remote")
     branch = _safe_git_name(_required_string(raw, "branch"), "branch")
@@ -169,7 +156,6 @@ def load_ledger_config(
     _reject_overlaps(checkout, paths)
     return LedgerConfig(
         schema_version=schema_version,
-        timezone=timezone,
         device_id=device_id,
         ledger_checkout=checkout,
         remote=remote,

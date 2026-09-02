@@ -1,0 +1,11 @@
+schema_version: "1.0"
+report_date_label: "window_end_local_date"
+
+periods:
+  - effective_from_report_date: "2026-09-02"
+    timezone: "Asia/Singapore"
+    day_boundary_local: "23:00"
+
+reports_directory: null
+assistant_claims_are_verified_evidence: false
+unknown_outcomes_remain_unknown: true

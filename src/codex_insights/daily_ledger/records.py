@@ -19,6 +19,12 @@ from codex_insights.daily_ledger.privacy import (
     safe_repository_name,
     sanitize_remote_text,
 )
+from codex_insights.daily_ledger.report_policy import (
+    ReportingPolicy,
+    load_reporting_policy,
+    report_date_for_timestamp,
+    reporting_window_for_date,
+)
 from codex_insights.models import (
     CommandCategory,
     EventFamily,
@@ -79,7 +85,12 @@ class RecordBuildResult:
     dates: tuple[str, ...]
 
 
-def build_session_cache(job: object, config: LedgerConfig) -> RecordBuildResult:
+def build_session_cache(
+    job: object,
+    config: LedgerConfig,
+    *,
+    policy: ReportingPolicy | None = None,
+) -> RecordBuildResult:
     """Parse one local job into privacy-safe daily slices."""
 
     session_id = _job_string(job, "session_id")
@@ -90,9 +101,11 @@ def build_session_cache(job: object, config: LedgerConfig) -> RecordBuildResult:
     source_hash = _sha256_file(transcript_path)
     parsed = _parse_transcript(session_id, transcript_path, cwd)
     snapshot = inspect_git_snapshot(cwd, remote=config.remote)
+    reporting_policy = policy or load_reporting_policy(config)
     slices = _daily_slices(
         parsed,
         config=config,
+        policy=reporting_policy,
         session_key=session_key,
         source_hash=source_hash,
         captured_at=captured_at,
@@ -213,6 +226,7 @@ def _daily_slices(
     parsed: ParsedSourceSession,
     *,
     config: LedgerConfig,
+    policy: ReportingPolicy,
     session_key: str,
     source_hash: str,
     captured_at: datetime,
@@ -230,27 +244,27 @@ def _daily_slices(
     ) and all(call.occurred_at is not None for call in calls)
     fallback = parsed.session.started_at or captured_at
     day_keys = {
-        _local_date(timestamp or fallback, config)
+        _report_date(timestamp or fallback, policy)
         for timestamp in (
             *(event.occurred_at for event in observations),
             *(call.occurred_at for call in calls),
         )
     }
     if not day_keys:
-        day_keys = {_local_date(fallback, config)}
-    captured_day = _local_date(captured_at, config)
+        day_keys = {_report_date(fallback, policy)}
+    captured_day = _report_date(captured_at, policy)
     hook_day = captured_day if captured_day in day_keys or not precise else max(day_keys)
     slices: dict[str, dict[str, object]] = {}
     for day in sorted(day_keys):
         day_calls = tuple(
             call
             for call in calls
-            if _local_date(call.occurred_at or fallback, config) == day
+            if _report_date(call.occurred_at or fallback, policy) == day
         )
         day_observations = tuple(
             event
             for event in observations
-            if _local_date(event.occurred_at or fallback, config) == day
+            if _report_date(event.occurred_at or fallback, policy) == day
         )
         assessment = _assessment(day_calls, day_observations, results)
         validations = _validations(day_calls, results, fallback=fallback)
@@ -296,10 +310,11 @@ def _daily_slices(
                 }
             )
         project_id = _project_id(snapshot, parsed.session.repository_name, session_key)
+        window = reporting_window_for_date(policy, date.fromisoformat(day))
         record: dict[str, object] = {
             "schema_version": SESSION_RECORD_SCHEMA,
             "date": day,
-            "timezone": config.timezone,
+            **window.identity(),
             "session_key": session_key,
             "device_id": config.device_id,
             "first_observed_activity": _format_datetime(first_observed),
@@ -710,9 +725,9 @@ def _bounds(
     return min(timestamps), max(timestamps)
 
 
-def _local_date(value: datetime, config: LedgerConfig) -> str:
+def _report_date(value: datetime, policy: ReportingPolicy) -> str:
     aware = value if value.tzinfo is not None else value.replace(tzinfo=UTC)
-    return aware.astimezone(config.zone).date().isoformat()
+    return report_date_for_timestamp(policy, aware).isoformat()
 
 
 def _parse_datetime(value: str) -> datetime:

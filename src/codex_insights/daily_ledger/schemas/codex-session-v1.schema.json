@@ -5,7 +5,8 @@
   "type": "object",
   "additionalProperties": false,
   "required": [
-    "schema_version", "date", "timezone", "session_key", "device_id", "revision",
+    "schema_version", "date", "report_date", "timezone", "day_boundary_local",
+    "window_start", "window_end", "session_key", "device_id", "revision",
     "first_observed_activity", "last_observed_activity", "timestamp_precision",
     "project", "activity_state", "objective", "work_done", "git", "commits",
     "validation", "decisions", "open_loops", "assistant_outcome_excerpt",
@@ -14,7 +15,11 @@
   "properties": {
     "schema_version": {"const": "codex-session-v1"},
     "date": {"type": "string", "format": "date"},
+    "report_date": {"type": "string", "format": "date"},
     "timezone": {"type": "string", "minLength": 1},
+    "day_boundary_local": {"type": "string", "pattern": "^(?:[01][0-9]|2[0-3]):[0-5][0-9]$"},
+    "window_start": {"type": "string", "format": "date-time"},
+    "window_end": {"type": "string", "format": "date-time"},
     "session_key": {"type": "string", "pattern": "^[0-9a-f]{32}$"},
     "device_id": {"type": "string", "minLength": 1},
     "revision": {"type": "integer", "minimum": 1},

@@ -11,6 +11,10 @@ from pathlib import Path, PurePosixPath
 
 from codex_insights.daily_ledger.config import LedgerConfig
 from codex_insights.daily_ledger.privacy import scan_remote_file
+from codex_insights.daily_ledger.report_policy import (
+    load_reporting_policy,
+    reporting_window_for_timestamp,
+)
 from codex_insights.path_safety import atomic_write_text
 
 _ALLOWED_STATIC_FILES = frozenset(
@@ -215,7 +219,7 @@ def _commit_allowlisted(config: LedgerConfig, *, now: datetime | None) -> bool:
         )
     if not allowed:
         return False
-    _assert_allowlisted_content_safe(config.ledger_checkout, allowed)
+    assert_allowlisted_content_safe(config.ledger_checkout, allowed)
     stage = _git(config.ledger_checkout, "add", "--", *allowed)
     if stage.returncode != 0:
         raise GitSyncError("Could not stage allowlisted ledger paths")
@@ -224,7 +228,13 @@ def _commit_allowlisted(config: LedgerConfig, *, now: datetime | None) -> bool:
         return False
     if staged.returncode != 1:
         raise GitSyncError("Could not inspect staged ledger changes")
-    timestamp = (now or datetime.now(tz=UTC)).astimezone(config.zone)
+    instant = now or datetime.now(tz=UTC)
+    if instant.tzinfo is None:
+        instant = instant.replace(tzinfo=UTC)
+    reporting_window = reporting_window_for_timestamp(
+        load_reporting_policy(config), instant
+    )
+    timestamp = instant.astimezone(reporting_window.window_end.tzinfo)
     message = f"ledger(codex): sync {timestamp:%Y-%m-%d %H:%M %Z}"
     commit = _git(config.ledger_checkout, "commit", "-m", message, timeout=30)
     if commit.returncode != 0:
@@ -240,7 +250,9 @@ def _assert_only_allowlisted(checkout: Path) -> None:
         )
 
 
-def _assert_allowlisted_content_safe(checkout: Path, paths: tuple[str, ...]) -> None:
+def assert_allowlisted_content_safe(checkout: Path, paths: tuple[str, ...]) -> None:
+    """Reject unsafe contents before an allowlisted file is interpreted or staged."""
+
     for relative in paths:
         path = checkout / relative
         if not path.exists():

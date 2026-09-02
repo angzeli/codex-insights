@@ -4,11 +4,17 @@ from __future__ import annotations
 
 import json
 from dataclasses import asdict, dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 
 from codex_insights.daily_ledger.config import LedgerConfig
 from codex_insights.daily_ledger.git_sync import inspect_checkout
 from codex_insights.daily_ledger.privacy import LeakageFinding, scan_remote_file
+from codex_insights.daily_ledger.report_policy import (
+    ReportPolicyError,
+    load_reporting_policy,
+    reporting_window_for_timestamp,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -18,8 +24,15 @@ class DoctorReport:
     schema_version: str
     config_path: str
     config_exists: bool
-    timezone: str
+    timezone: str | None
     timezone_valid: bool
+    day_boundary_local: str | None
+    current_report_date: str | None
+    current_window_start: str | None
+    current_window_end: str | None
+    next_reporting_boundary: str | None
+    reporting_periods_valid: bool
+    reporting_policy_error: str | None
     device_id: str
     checkout: str
     checkout_exists: bool
@@ -47,7 +60,12 @@ class DoctorReport:
         return payload
 
 
-def run_doctor(config: LedgerConfig, *, codex_home: Path) -> DoctorReport:
+def run_doctor(
+    config: LedgerConfig,
+    *,
+    codex_home: Path,
+    now: datetime | None = None,
+) -> DoctorReport:
     """Inspect the configured environment without network access or mutation."""
 
     checkout = inspect_checkout(config)
@@ -55,12 +73,39 @@ def run_doctor(config: LedgerConfig, *, codex_home: Path) -> DoctorReport:
     hook_config = codex_home.expanduser().resolve(strict=False) / "hooks.json"
     findings, scanned = _scan_generated_files(config.ledger_checkout)
     last_push = _load_last_push(config)
+    timezone: str | None = None
+    day_boundary: str | None = None
+    report_date: str | None = None
+    window_start: str | None = None
+    window_end: str | None = None
+    policy_error: str | None = None
+    try:
+        policy = load_reporting_policy(config)
+        instant = now or datetime.now(tz=UTC)
+        if instant.tzinfo is None:
+            instant = instant.replace(tzinfo=UTC)
+        window = reporting_window_for_timestamp(policy, instant)
+        identity = window.identity()
+        timezone = window.timezone
+        day_boundary = window.day_boundary_local
+        report_date = window.report_date.isoformat()
+        window_start = identity["window_start"]
+        window_end = identity["window_end"]
+    except ReportPolicyError as exc:
+        policy_error = str(exc)
     return DoctorReport(
         schema_version=config.schema_version,
         config_path=str(config.paths.config),
         config_exists=config.paths.config.is_file(),
-        timezone=config.timezone,
-        timezone_valid=True,
+        timezone=timezone,
+        timezone_valid=policy_error is None,
+        day_boundary_local=day_boundary,
+        current_report_date=report_date,
+        current_window_start=window_start,
+        current_window_end=window_end,
+        next_reporting_boundary=window_end,
+        reporting_periods_valid=policy_error is None,
+        reporting_policy_error=policy_error,
         device_id=config.device_id,
         checkout=str(config.ledger_checkout),
         checkout_exists=config.ledger_checkout.is_dir(),

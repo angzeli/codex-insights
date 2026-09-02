@@ -6,6 +6,7 @@
     "sessions_seen": 1
   },
   "date": "2026-09-01",
+  "day_boundary_local": "23:00",
   "generated_at": "2026-09-01T09:35:00Z",
   "project_rollups": [
     {
@@ -56,6 +57,7 @@
     }
   ],
   "revision": 1,
+  "report_date": "2026-09-01",
   "schema_version": "codex-daily-summary-v1",
   "timezone": "Asia/Singapore",
   "totals": {
@@ -72,5 +74,7 @@
     "commits": 1,
     "sessions": 1,
     "validation_events": 1
-  }
+  },
+  "window_end": "2026-09-01T23:00:00+08:00",
+  "window_start": "2026-08-31T23:00:00+08:00"
 }

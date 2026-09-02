@@ -5,7 +5,8 @@
   "type": "object",
   "additionalProperties": false,
   "required": [
-    "schema_version", "date", "timezone", "generated_at", "revision", "device_id",
+    "schema_version", "date", "report_date", "timezone", "day_boundary_local",
+    "window_start", "window_end", "generated_at", "revision", "device_id",
     "first_observed_activity", "last_observed_activity", "sessions_seen",
     "sessions_exported", "sessions_with_unknown_outcomes", "sync_state",
     "late_arrival", "generated_file_hashes"
@@ -13,7 +14,11 @@
   "properties": {
     "schema_version": {"const": "codex-manifest-v1"},
     "date": {"type": "string", "format": "date"},
+    "report_date": {"type": "string", "format": "date"},
     "timezone": {"type": "string"},
+    "day_boundary_local": {"type": "string", "pattern": "^(?:[01][0-9]|2[0-3]):[0-5][0-9]$"},
+    "window_start": {"type": "string", "format": "date-time"},
+    "window_end": {"type": "string", "format": "date-time"},
     "generated_at": {"type": "string", "format": "date-time"},
     "revision": {"type": "integer", "minimum": 1},
     "device_id": {"type": "string"},

@@ -31,6 +31,7 @@
     "worktree_state": "clean"
   },
   "last_observed_activity": "2026-09-01T09:35:00Z",
+  "day_boundary_local": "23:00",
   "objective": "Add a privacy-filtered daily ledger.",
   "open_loops": [],
   "project": {
@@ -40,6 +41,7 @@
     "remote_slug": "example/private-ledger-source"
   },
   "revision": 1,
+  "report_date": "2026-09-01",
   "schema_version": "codex-session-v1",
   "session_key": "0123456789abcdef0123456789abcdef",
   "timestamp_precision": "event",
@@ -63,6 +65,8 @@
       "validation_id": "validation-example-1"
     }
   ],
+  "window_end": "2026-09-01T23:00:00+08:00",
+  "window_start": "2026-08-31T23:00:00+08:00",
   "work_done": [
     {
       "confidence": "high",

@@ -15,8 +15,18 @@ from codex_insights.daily_ledger.config import (
     ensure_state_directories,
     validate_checkout_separation,
 )
-from codex_insights.daily_ledger.exporter import ExportResult, cached_dates, export_day
-from codex_insights.daily_ledger.git_sync import GitSyncError, GitSyncResult, sync_checkout
+from codex_insights.daily_ledger.exporter import (
+    ExportResult,
+    cached_dates,
+    export_day,
+    initialize_checkout_contract,
+)
+from codex_insights.daily_ledger.git_sync import (
+    GitSyncError,
+    GitSyncResult,
+    assert_allowlisted_content_safe,
+    sync_checkout,
+)
 from codex_insights.daily_ledger.locking import LockUnavailableError, ProcessLock
 from codex_insights.daily_ledger.queue import (
     capture_hook_payload,
@@ -26,6 +36,10 @@ from codex_insights.daily_ledger.records import (
     RecordBuildResult,
     build_session_cache,
     merge_session_cache,
+)
+from codex_insights.daily_ledger.report_policy import (
+    load_reporting_policy,
+    report_date_for_timestamp,
 )
 from codex_insights.path_safety import atomic_write_text
 
@@ -75,6 +89,8 @@ def backfill_range(
 
     if until < since:
         raise ValueError("--until must not be earlier than --since")
+    initialize_checkout_contract(config)
+    policy = load_reporting_policy(config)
     resolution = resolve_codex_home(codex_home)
     validate_checkout_separation(config, codex_home=resolution.path)
     adapter = CodexLocalAdapter(resolution)
@@ -90,9 +106,9 @@ def backfill_range(
         start = session.started_at or session.updated_at
         end = session.apparent_ended_at or session.updated_at or session.started_at
         if start is not None and end is not None:
-            local_start = start.astimezone(config.zone).date()
-            local_end = end.astimezone(config.zone).date()
-            if local_end < since or local_start > until:
+            first_report_date = report_date_for_timestamp(policy, start)
+            last_report_date = report_date_for_timestamp(policy, end)
+            if last_report_date < since or first_report_date > until:
                 continue
         payload = {
             "session_id": session.source_session_id,
@@ -111,6 +127,11 @@ def backfill_range(
 
 
 def _flush_locked(config: LedgerConfig, *, no_push: bool) -> FlushResult:
+    initialize_checkout_contract(config)
+    assert_allowlisted_content_safe(
+        config.ledger_checkout, ("config/report-policy.yaml",)
+    )
+    policy = load_reporting_policy(config)
     claimed = _claim_pending(config)
     failed = 0
     processed = 0
@@ -123,7 +144,7 @@ def _flush_locked(config: LedgerConfig, *, no_push: bool) -> FlushResult:
                 config,
                 audited_working_directories=(Path(job.cwd),),
             )
-            result = build_session_cache(job, config)
+            result = build_session_cache(job, config, policy=policy)
             previous = _load_cache(config, result.session_key)
             affected_dates.update(_cache_dates(previous))
             affected_dates.update(date.fromisoformat(value) for value in result.dates)

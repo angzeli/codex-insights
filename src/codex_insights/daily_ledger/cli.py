@@ -77,7 +77,28 @@ def doctor_command(
     table.add_column("Value", overflow="fold")
     table.add_row("Schema", report.schema_version)
     table.add_row("Configuration", report.config_path)
-    table.add_row("Timezone", report.timezone)
+    table.add_row("Reporting timezone", report.timezone or "invalid or unavailable")
+    table.add_row(
+        "Timezone identifier",
+        "valid IANA timezone" if report.timezone_valid else "invalid",
+    )
+    table.add_row("Day boundary", report.day_boundary_local or "invalid or unavailable")
+    table.add_row("Current report date", report.current_report_date or "unavailable")
+    table.add_row(
+        "Current reporting window",
+        (
+            f"[{report.current_window_start}, {report.current_window_end})"
+            if report.current_window_start and report.current_window_end
+            else "unavailable"
+        ),
+    )
+    table.add_row("Next reporting boundary", report.next_reporting_boundary or "unavailable")
+    table.add_row(
+        "Historical periods",
+        "valid and contiguous" if report.reporting_periods_valid else "invalid",
+    )
+    if report.reporting_policy_error:
+        table.add_row("Reporting policy error", report.reporting_policy_error)
     table.add_row("Ledger checkout", report.checkout)
     table.add_row("Git checkout", "ready" if report.checkout_valid else "not ready")
     table.add_row("Remote", "present" if report.remote_exists else "missing")
