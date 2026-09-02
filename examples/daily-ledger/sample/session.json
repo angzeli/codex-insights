@@ -1,0 +1,73 @@
+{
+  "activity_state": "completed_locally",
+  "assistant_outcome_excerpt": "Implemented the bounded ledger exporter and ran focused tests.",
+  "commits": [
+    {
+      "evidence_type": "structured_git_command_result",
+      "pushed": null,
+      "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "subject": "Add bounded daily ledger export",
+      "timestamp": "2026-09-01T09:30:00Z"
+    }
+  ],
+  "date": "2026-09-01",
+  "decisions": [],
+  "device_id": "example-device",
+  "event_ids": ["event-example-1"],
+  "evidence": {
+    "assistant_claim_used_for_completion": false,
+    "level": "high",
+    "parser_version": "codex-source-parser-example",
+    "sources": ["command_results", "git_command_results", "structured_parser"]
+  },
+  "first_observed_activity": "2026-09-01T09:00:00Z",
+  "git": {
+    "branch": "main",
+    "ending_head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "evidence_type": "persisted_local_git_state",
+    "pushed": null,
+    "remote_slug": "example/private-ledger-source",
+    "starting_head": null,
+    "worktree_state": "clean"
+  },
+  "last_observed_activity": "2026-09-01T09:35:00Z",
+  "objective": "Add a privacy-filtered daily ledger.",
+  "open_loops": [],
+  "project": {
+    "category": "software",
+    "display_name": "example-project",
+    "project_id": "example/private-ledger-source",
+    "remote_slug": "example/private-ledger-source"
+  },
+  "revision": 1,
+  "schema_version": "codex-session-v1",
+  "session_key": "0123456789abcdef0123456789abcdef",
+  "timestamp_precision": "event",
+  "timezone": "Asia/Singapore",
+  "transcript_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "underlying_outcome": {
+    "classifier_version": "outcome-classifier-v2",
+    "confidence": "medium",
+    "evidence": ["originated_validation_pass_without_later_failure"],
+    "lifecycle_status": "turn_completed",
+    "outcome": "success"
+  },
+  "validation": [
+    {
+      "category": "testing",
+      "command": "python -m pytest tests/test_daily_ledger.py",
+      "evidence_type": "structured_command_result",
+      "result": "success",
+      "scope": "file",
+      "timestamp": "2026-09-01T09:35:00Z",
+      "validation_id": "validation-example-1"
+    }
+  ],
+  "work_done": [
+    {
+      "confidence": "high",
+      "evidence_type": "structured_command_result",
+      "summary": "Observed 1 successful validation command(s)"
+    }
+  ]
+}

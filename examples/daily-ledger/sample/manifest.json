@@ -1,0 +1,24 @@
+{
+  "date": "2026-09-01",
+  "device_id": "example-device",
+  "first_observed_activity": "2026-09-01T09:00:00Z",
+  "generated_at": "2026-09-01T09:35:00Z",
+  "generated_file_hashes": {
+    "events.jsonl": "537b09060352ceb96735d3b19d1d5fabf62bcb39415256521c0b968eed993bdf",
+    "sessions/0123456789abcdef0123456789abcdef.json": "31b9bccf2a8982dfa372c6f609c76d37ef388f1b2da46b94ce550222fc5eaad1",
+    "summary.json": "11c442b42e769569fabdb1f440864eda65431cb33c205a3346da669f31b5bd08"
+  },
+  "last_observed_activity": "2026-09-01T09:35:00Z",
+  "late_arrival": {
+    "changed_session_keys": [],
+    "new_session_keys": ["0123456789abcdef0123456789abcdef"],
+    "previous_revision": null
+  },
+  "revision": 1,
+  "schema_version": "codex-manifest-v1",
+  "sessions_exported": 1,
+  "sessions_seen": 1,
+  "sessions_with_unknown_outcomes": 0,
+  "sync_state": "complete_through_last_observed_activity",
+  "timezone": "Asia/Singapore"
+}

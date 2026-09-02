@@ -1,0 +1,7 @@
+schema_version = "1.0"
+timezone = "Asia/Singapore"
+device_id = "angzes-macbook-pro"
+ledger_checkout = "/Users/liangze/Documents/angze-daily-ledger"
+remote = "origin"
+branch = "main"
+push_enabled = true

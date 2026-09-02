@@ -23,6 +23,8 @@ not contain data from a real Codex installation.
 - explores sessions, repositories, models, prompts, tools, commands, commits, outcomes, and tasks;
 - generates Markdown, JSON, and self-contained offline HTML reports;
 - generates a static offline dashboard with no server, JavaScript, CDN, analytics, or tracking;
+- optionally captures Stop and SessionEnd activity into a privacy-filtered daily JSON ledger for a
+  dedicated private Git repository;
 - exposes source capability, metric coverage, confidence, ambiguity, and stale-state diagnostics;
 - controls future prompt/command-text retention and safely exports, backs up, purges, or resets only
   derived Codex Insights state.
@@ -74,6 +76,17 @@ The default derived database is outside the Codex home:
 - Linux/other: `${XDG_DATA_HOME:-~/.local/share}/codex-insights/index.sqlite3`
 
 Use `--db PATH` for another safe location.
+
+### Optional private daily ledger
+
+The `daily-ledger` command group adds a separate, opt-in workflow for hook capture, deterministic
+per-day JSON export, and conservative Git synchronization. It uses an atomic local queue and a
+detached short-lived worker; it does not install a daemon, modify hooks automatically, or put raw
+transcripts, prompts, command output, credentials, or absolute paths in the remote ledger.
+
+Start with the complete [daily ledger setup guide](docs/daily-ledger.md). The supplied hook manager
+preserves unrelated hook definitions and changes `~/.codex/hooks.json` only when you explicitly run
+its `install` or `disable` action.
 
 ## Five-minute quick start
 

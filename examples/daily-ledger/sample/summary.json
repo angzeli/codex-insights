@@ -1,0 +1,76 @@
+{
+  "coverage": {
+    "capture_fallback_sessions": 0,
+    "event_timestamp_sessions": 1,
+    "sessions_exported": 1,
+    "sessions_seen": 1
+  },
+  "date": "2026-09-01",
+  "generated_at": "2026-09-01T09:35:00Z",
+  "project_rollups": [
+    {
+      "activity_state": "completed_locally",
+      "category": "software",
+      "commits": [
+        {
+          "evidence_type": "structured_git_command_result",
+          "pushed": null,
+          "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "subject": "Add bounded daily ledger export",
+          "timestamp": "2026-09-01T09:30:00Z"
+        }
+      ],
+      "decisions": [],
+      "display_name": "example-project",
+      "evidence_level": "high",
+      "git": {
+        "branch": "main",
+        "ending_head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "pushed": null,
+        "remote_slug": "example/private-ledger-source",
+        "starting_head": null,
+        "worktree_state": "clean"
+      },
+      "objective": "Add a privacy-filtered daily ledger.",
+      "open_loops": [],
+      "project_id": "example/private-ledger-source",
+      "session_keys": ["0123456789abcdef0123456789abcdef"],
+      "validation": [
+        {
+          "category": "testing",
+          "command": "python -m pytest tests/test_daily_ledger.py",
+          "evidence_type": "structured_command_result",
+          "result": "success",
+          "scope": "file",
+          "timestamp": "2026-09-01T09:35:00Z",
+          "validation_id": "validation-example-1"
+        }
+      ],
+      "work_done": [
+        {
+          "confidence": "high",
+          "evidence_type": "structured_command_result",
+          "summary": "Observed 1 successful validation command(s)"
+        }
+      ]
+    }
+  ],
+  "revision": 1,
+  "schema_version": "codex-daily-summary-v1",
+  "timezone": "Asia/Singapore",
+  "totals": {
+    "activities": 1,
+    "activity_states": {
+      "abandoned": 0,
+      "blocked": 0,
+      "completed": 0,
+      "completed_locally": 1,
+      "in_progress": 0,
+      "planning_only": 0,
+      "unknown": 0
+    },
+    "commits": 1,
+    "sessions": 1,
+    "validation_events": 1
+  }
+}
