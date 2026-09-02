@@ -55,6 +55,7 @@ def test_help_smoke() -> None:
         ("export", "--help"),
         ("backup-index", "--help"),
         ("reset-index", "--help"),
+        ("daily-ledger", "--help"),
     ),
 )
 def test_public_command_help_is_available(arguments: tuple[str, ...]) -> None:
