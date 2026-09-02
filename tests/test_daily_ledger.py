@@ -788,6 +788,56 @@ def test_backfill_uses_synthetic_inventory_and_retains_no_push_jobs(tmp_path: Pa
     assert tuple(config.ledger_checkout.rglob("sessions/*.json"))
 
 
+def test_backfill_and_retained_flush_export_only_requested_report_dates(
+    tmp_path: Path,
+) -> None:
+    config = _direct_config(tmp_path)
+    codex_home = tmp_path / "codex-home"
+    records = (
+        *_planning_records(timestamp="2026-08-31T14:00:00Z"),
+        *_validation_records(timestamp="2026-09-01T01:00:00Z"),
+    )
+    transcript = _write_rollout(
+        codex_home / "sessions" / "cross-range-backfill.jsonl", records
+    )
+    with sqlite3.connect(codex_home / "state_1.sqlite") as connection:
+        connection.executescript(
+            """
+            CREATE TABLE threads (
+                id TEXT PRIMARY KEY, rollout_path TEXT, created_at TEXT,
+                updated_at TEXT, source TEXT, cwd TEXT, archived INTEGER
+            );
+            """
+        )
+        connection.execute(
+            "INSERT INTO threads VALUES (?, ?, ?, ?, ?, ?, 0)",
+            (
+                "cross-range-backfill-session",
+                str(transcript.relative_to(codex_home)),
+                "2026-08-31T14:00:00Z",
+                "2026-09-01T03:00:00Z",
+                "cli",
+                str(tmp_path / "project"),
+            ),
+        )
+
+    first = backfill_range(
+        config,
+        since=date(2026, 9, 1),
+        until=date(2026, 9, 1),
+        codex_home=codex_home,
+        no_push=True,
+    )
+    second = flush_queue(config, no_push=True)
+    report_dates = sorted(
+        path.parent.name for path in config.ledger_checkout.rglob("manifest.json")
+    )
+
+    assert first.exported_dates == ("2026-09-01",)
+    assert second.exported_dates == ("2026-09-01",)
+    assert report_dates == ["01"]
+
+
 def test_backfill_uses_policy_effective_for_historical_report_date(
     tmp_path: Path,
 ) -> None:

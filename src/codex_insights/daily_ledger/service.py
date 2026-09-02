@@ -116,6 +116,8 @@ def backfill_range(
             "cwd": str(session.cwd or resolution.path.parent),
             "hook_event_name": "SessionEnd",
             "reason": "backfill",
+            "report_date_since": since.isoformat(),
+            "report_date_until": until.isoformat(),
         }
         capture_hook_payload(
             payload,
@@ -146,8 +148,15 @@ def _flush_locked(config: LedgerConfig, *, no_push: bool) -> FlushResult:
             )
             result = build_session_cache(job, config, policy=policy)
             previous = _load_cache(config, result.session_key)
-            affected_dates.update(_cache_dates(previous))
-            affected_dates.update(date.fromisoformat(value) for value in result.dates)
+            job_dates = _cache_dates(previous)
+            job_dates.update(date.fromisoformat(value) for value in result.dates)
+            scope = _job_report_date_scope(job)
+            if scope is not None:
+                scope_start, scope_end = scope
+                job_dates = {
+                    value for value in job_dates if scope_start <= value <= scope_end
+                }
+            affected_dates.update(job_dates)
             _save_cache(config, result, previous)
             processed += 1
             valid_jobs.append(path)
@@ -238,6 +247,20 @@ def _cache_dates(cache: dict[str, object] | None) -> set[date]:
         except ValueError:
             continue
     return dates
+
+
+def _job_report_date_scope(job: object) -> tuple[date, date] | None:
+    since_text = getattr(job, "report_date_since", None)
+    until_text = getattr(job, "report_date_until", None)
+    if since_text is None and until_text is None:
+        return None
+    if not isinstance(since_text, str) or not isinstance(until_text, str):
+        raise ValueError("Pending-job report-date scope is incomplete")
+    since = date.fromisoformat(since_text)
+    until = date.fromisoformat(until_text)
+    if until < since:
+        raise ValueError("Pending-job report-date scope is invalid")
+    return since, until
 
 
 def _move_failed(config: LedgerConfig, path: Path, exc: Exception) -> None:

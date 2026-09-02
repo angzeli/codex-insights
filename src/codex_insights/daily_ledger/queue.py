@@ -8,7 +8,7 @@ import os
 import subprocess
 import sys
 from dataclasses import asdict, dataclass
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any
 
@@ -43,6 +43,8 @@ class HookJob:
     reason: str | None = None
     transcript_size: int | None = None
     transcript_mtime_ns: int | None = None
+    report_date_since: str | None = None
+    report_date_until: str | None = None
 
     @classmethod
     def from_dict(cls, raw: dict[str, object]) -> HookJob:
@@ -61,6 +63,16 @@ class HookJob:
         }
         if not all(isinstance(value, str) and value for value in required.values()):
             raise ValueError("Pending job is missing required string fields")
+        report_date_since = _optional_iso_date(raw.get("report_date_since"))
+        report_date_until = _optional_iso_date(raw.get("report_date_until"))
+        if (report_date_since is None) != (report_date_until is None):
+            raise ValueError("Pending-job report-date scope is incomplete")
+        if (
+            report_date_since is not None
+            and report_date_until is not None
+            and report_date_until < report_date_since
+        ):
+            raise ValueError("Pending-job report-date scope is invalid")
         return cls(
             schema=HOOK_JOB_SCHEMA,
             event_id=str(required["event_id"]),
@@ -76,6 +88,8 @@ class HookJob:
             reason=_optional_string(raw.get("reason")),
             transcript_size=_optional_int(raw.get("transcript_size")),
             transcript_mtime_ns=_optional_int(raw.get("transcript_mtime_ns")),
+            report_date_since=report_date_since,
+            report_date_until=report_date_until,
         )
 
 
@@ -116,6 +130,16 @@ def capture_hook_payload(
     assistant_excerpt = sanitize_remote_text(
         raw.get("last_assistant_message"), maximum_characters=320
     )
+    report_date_since = _optional_iso_date(raw.get("report_date_since"))
+    report_date_until = _optional_iso_date(raw.get("report_date_until"))
+    if (report_date_since is None) != (report_date_until is None):
+        return None
+    if (
+        report_date_since is not None
+        and report_date_until is not None
+        and report_date_until < report_date_since
+    ):
+        return None
     event_id = _event_id(
         session_id=session_id,
         event_name=event_name,
@@ -124,6 +148,8 @@ def capture_hook_payload(
         transcript_path=transcript,
         transcript_size=size,
         transcript_mtime_ns=mtime_ns,
+        report_date_since=report_date_since,
+        report_date_until=report_date_until,
     )
     job = HookJob(
         schema=HOOK_JOB_SCHEMA,
@@ -138,6 +164,8 @@ def capture_hook_payload(
         reason=reason,
         transcript_size=size,
         transcript_mtime_ns=mtime_ns,
+        report_date_since=report_date_since,
+        report_date_until=report_date_until,
     )
     ensure_state_directories(config.paths)
     destination = config.paths.pending / f"{event_id}.json"
@@ -208,6 +236,8 @@ def _event_id(
     transcript_path: Path,
     transcript_size: int | None,
     transcript_mtime_ns: int | None,
+    report_date_since: str | None,
+    report_date_until: str | None,
 ) -> str:
     canonical = json.dumps(
         {
@@ -218,6 +248,8 @@ def _event_id(
             "transcript_path": str(transcript_path),
             "transcript_size": transcript_size,
             "transcript_mtime_ns": transcript_mtime_ns,
+            "report_date_since": report_date_since,
+            "report_date_until": report_date_until,
         },
         separators=(",", ":"),
         sort_keys=True,
@@ -235,6 +267,14 @@ def _optional_string(value: object) -> str | None:
 
 def _optional_int(value: object) -> int | None:
     return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
+def _optional_iso_date(value: object) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value:
+        raise ValueError("Report-date scope must use ISO date strings")
+    return date.fromisoformat(value).isoformat()
 
 
 def log_local_failure(paths: LedgerPaths, category: str, exc: Exception) -> None:
