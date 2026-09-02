@@ -20,14 +20,14 @@ do not modify `~/.codex/hooks.json` until the explicit `manage_hooks.py install`
 
    ```bash
    gh repo create angze-daily-ledger --private
-   git clone git@github.com:angze/angze-daily-ledger.git "/Users/liangze/Documents/angze-daily-ledger"
+   git clone git@github.com:YOUR_GITHUB_USERNAME/angze-daily-ledger.git "$HOME/Documents/angze-daily-ledger"
    ```
 
 2. Install this checkout into an isolated local environment:
 
    ```bash
    python3 -m venv "$HOME/.local/share/codex-insights/venv"
-   "$HOME/.local/share/codex-insights/venv/bin/python" -m pip install -e "/Users/liangze/Desktop/squiddy tools/codex-insights"
+   "$HOME/.local/share/codex-insights/venv/bin/python" -m pip install -e .
    ```
 
 3. Install the sample local config, committed report policy, and helper files:
@@ -35,9 +35,9 @@ do not modify `~/.codex/hooks.json` until the explicit `manage_hooks.py install`
    ```bash
    mkdir -p "$HOME/.config/codex-insights" "$HOME/.local/share/codex-insights/daily-ledger"
    install -m 0600 examples/daily-ledger/daily-ledger.toml "$HOME/.config/codex-insights/daily-ledger.toml"
-   mkdir -p "/Users/liangze/Documents/angze-daily-ledger/config"
-   test -e "/Users/liangze/Documents/angze-daily-ledger/config/report-policy.yaml" || \
-     install -m 0644 examples/daily-ledger/report-policy.yaml "/Users/liangze/Documents/angze-daily-ledger/config/report-policy.yaml"
+   mkdir -p "$HOME/Documents/angze-daily-ledger/config"
+   test -e "$HOME/Documents/angze-daily-ledger/config/report-policy.yaml" || \
+     install -m 0644 examples/daily-ledger/report-policy.yaml "$HOME/Documents/angze-daily-ledger/config/report-policy.yaml"
    install -m 0755 examples/daily-ledger/capture_hook.py "$HOME/.local/share/codex-insights/daily-ledger/capture_hook.py"
    install -m 0755 examples/daily-ledger/manage_hooks.py "$HOME/.local/share/codex-insights/daily-ledger/manage_hooks.py"
    ```
@@ -57,7 +57,7 @@ do not modify `~/.codex/hooks.json` until the explicit `manage_hooks.py install`
 
    ```bash
    "$HOME/.local/share/codex-insights/venv/bin/codex-insights" daily-ledger backfill --since 2026-08-27 --until 2026-09-02 --no-push
-   git -C "/Users/liangze/Documents/angze-daily-ledger" status --short
+   git -C "$HOME/Documents/angze-daily-ledger" status --short
    ```
 
 7. Flush and push manually after inspection:
