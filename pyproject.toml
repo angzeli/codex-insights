@@ -31,7 +31,7 @@ codex-insights = "codex_insights.cli:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-codex_insights = ["assets/*.css"]
+codex_insights = ["assets/*.css", "daily_ledger/schemas/*.json"]
 
 [tool.pytest.ini_options]
 addopts = "-q"

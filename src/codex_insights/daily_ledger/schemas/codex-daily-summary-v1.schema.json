@@ -1,0 +1,73 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/codex-daily-summary-v1.schema.json",
+  "title": "Codex daily summary V1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version", "date", "timezone", "generated_at", "revision",
+    "coverage", "totals", "project_rollups"
+  ],
+  "properties": {
+    "schema_version": {"const": "codex-daily-summary-v1"},
+    "date": {"type": "string", "format": "date"},
+    "timezone": {"type": "string"},
+    "generated_at": {"type": "string", "format": "date-time"},
+    "revision": {"type": "integer", "minimum": 1},
+    "coverage": {
+      "type": "object",
+      "required": [
+        "sessions_seen", "sessions_exported", "event_timestamp_sessions",
+        "capture_fallback_sessions"
+      ],
+      "properties": {
+        "sessions_seen": {"type": "integer", "minimum": 0},
+        "sessions_exported": {"type": "integer", "minimum": 0},
+        "event_timestamp_sessions": {"type": "integer", "minimum": 0},
+        "capture_fallback_sessions": {"type": "integer", "minimum": 0}
+      }
+    },
+    "totals": {
+      "type": "object",
+      "required": ["activities", "sessions", "commits", "validation_events", "activity_states"],
+      "properties": {
+        "activities": {"type": "integer", "minimum": 0},
+        "sessions": {"type": "integer", "minimum": 0},
+        "commits": {"type": "integer", "minimum": 0},
+        "validation_events": {"type": "integer", "minimum": 0},
+        "activity_states": {"type": "object"}
+      }
+    },
+    "project_rollups": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "project_id", "display_name", "category", "activity_state", "objective",
+          "work_done", "git", "commits", "validation", "decisions", "open_loops",
+          "session_keys", "evidence_level"
+        ],
+        "properties": {
+          "project_id": {"type": "string"},
+          "display_name": {"type": "string"},
+          "category": {"type": "string"},
+          "activity_state": {
+            "enum": [
+              "completed", "completed_locally", "in_progress", "blocked",
+              "planning_only", "abandoned", "unknown"
+            ]
+          },
+          "objective": {"type": ["string", "null"]},
+          "work_done": {"type": "array"},
+          "git": {"type": "object"},
+          "commits": {"type": "array"},
+          "validation": {"type": "array"},
+          "decisions": {"type": "array"},
+          "open_loops": {"type": "array"},
+          "session_keys": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
+          "evidence_level": {"enum": ["high", "medium", "low"]}
+        }
+      }
+    }
+  }
+}

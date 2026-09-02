@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/codex-manifest-v1.schema.json",
+  "title": "Codex daily manifest V1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version", "date", "timezone", "generated_at", "revision", "device_id",
+    "first_observed_activity", "last_observed_activity", "sessions_seen",
+    "sessions_exported", "sessions_with_unknown_outcomes", "sync_state",
+    "late_arrival", "generated_file_hashes"
+  ],
+  "properties": {
+    "schema_version": {"const": "codex-manifest-v1"},
+    "date": {"type": "string", "format": "date"},
+    "timezone": {"type": "string"},
+    "generated_at": {"type": "string", "format": "date-time"},
+    "revision": {"type": "integer", "minimum": 1},
+    "device_id": {"type": "string"},
+    "first_observed_activity": {"type": ["string", "null"]},
+    "last_observed_activity": {"type": ["string", "null"]},
+    "sessions_seen": {"type": "integer", "minimum": 0},
+    "sessions_exported": {"type": "integer", "minimum": 0},
+    "sessions_with_unknown_outcomes": {"type": "integer", "minimum": 0},
+    "sync_state": {
+      "enum": ["complete_through_last_observed_activity", "partial", "unknown"]
+    },
+    "late_arrival": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["previous_revision", "new_session_keys", "changed_session_keys"],
+      "properties": {
+        "previous_revision": {"type": ["integer", "null"]},
+        "new_session_keys": {"type": "array", "items": {"type": "string"}},
+        "changed_session_keys": {"type": "array", "items": {"type": "string"}}
+      }
+    },
+    "generated_file_hashes": {
+      "type": "object",
+      "additionalProperties": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+    }
+  }
+}

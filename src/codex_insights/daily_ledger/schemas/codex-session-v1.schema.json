@@ -1,0 +1,138 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/codex-session-v1.schema.json",
+  "title": "Codex daily session slice V1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version", "date", "timezone", "session_key", "device_id", "revision",
+    "first_observed_activity", "last_observed_activity", "timestamp_precision",
+    "project", "activity_state", "objective", "work_done", "git", "commits",
+    "validation", "decisions", "open_loops", "assistant_outcome_excerpt",
+    "underlying_outcome", "transcript_sha256", "evidence", "event_ids"
+  ],
+  "properties": {
+    "schema_version": {"const": "codex-session-v1"},
+    "date": {"type": "string", "format": "date"},
+    "timezone": {"type": "string", "minLength": 1},
+    "session_key": {"type": "string", "pattern": "^[0-9a-f]{32}$"},
+    "device_id": {"type": "string", "minLength": 1},
+    "revision": {"type": "integer", "minimum": 1},
+    "first_observed_activity": {"type": "string", "format": "date-time"},
+    "last_observed_activity": {"type": "string", "format": "date-time"},
+    "timestamp_precision": {"enum": ["event", "capture_fallback"]},
+    "project": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["project_id", "display_name", "category", "remote_slug"],
+      "properties": {
+        "project_id": {"type": "string", "minLength": 1},
+        "display_name": {"type": "string", "minLength": 1},
+        "category": {"type": "string", "minLength": 1},
+        "remote_slug": {"type": ["string", "null"]}
+      }
+    },
+    "activity_state": {
+      "enum": [
+        "completed", "completed_locally", "in_progress", "blocked",
+        "planning_only", "abandoned", "unknown"
+      ]
+    },
+    "objective": {"type": ["string", "null"]},
+    "work_done": {"type": "array", "items": {"$ref": "#/$defs/work_item"}},
+    "git": {"$ref": "#/$defs/git_state"},
+    "commits": {"type": "array", "items": {"$ref": "#/$defs/commit"}},
+    "validation": {"type": "array", "items": {"$ref": "#/$defs/validation"}},
+    "decisions": {"type": "array", "items": {"type": "string"}},
+    "open_loops": {"type": "array", "items": {"type": "string"}},
+    "assistant_outcome_excerpt": {"type": ["string", "null"]},
+    "underlying_outcome": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["outcome", "confidence", "lifecycle_status", "evidence", "classifier_version"],
+      "properties": {
+        "outcome": {
+          "enum": [
+            "success", "success_with_warnings", "partial", "failed", "abandoned",
+            "no_change", "unknown"
+          ]
+        },
+        "confidence": {"enum": ["high", "medium", "low"]},
+        "lifecycle_status": {"enum": ["turn_completed", "aborted", "unknown"]},
+        "evidence": {"type": "array", "items": {"type": "string"}},
+        "classifier_version": {"type": "string"}
+      }
+    },
+    "transcript_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["level", "sources", "assistant_claim_used_for_completion", "parser_version"],
+      "properties": {
+        "level": {"enum": ["high", "medium", "low"]},
+        "sources": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
+        "assistant_claim_used_for_completion": {"const": false},
+        "parser_version": {"type": "string"}
+      }
+    },
+    "event_ids": {"type": "array", "items": {"type": "string"}, "uniqueItems": true}
+  },
+  "$defs": {
+    "work_item": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["summary", "evidence_type", "confidence"],
+      "properties": {
+        "summary": {"type": "string"},
+        "evidence_type": {"type": "string"},
+        "confidence": {"enum": ["high", "medium", "low"]}
+      }
+    },
+    "git_state": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "starting_head", "ending_head", "branch", "remote_slug",
+        "worktree_state", "pushed", "evidence_type"
+      ],
+      "properties": {
+        "starting_head": {"type": ["string", "null"]},
+        "ending_head": {"type": ["string", "null"]},
+        "branch": {"type": ["string", "null"]},
+        "remote_slug": {"type": ["string", "null"]},
+        "worktree_state": {"enum": ["clean", "dirty", "unknown"]},
+        "pushed": {"type": ["boolean", "null"]},
+        "evidence_type": {"type": "string"}
+      }
+    },
+    "commit": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sha", "subject", "timestamp", "pushed", "evidence_type"],
+      "properties": {
+        "sha": {"type": "string", "pattern": "^[0-9a-f]{7,40}$"},
+        "subject": {"type": ["string", "null"]},
+        "timestamp": {"type": "string", "format": "date-time"},
+        "pushed": {"type": ["boolean", "null"]},
+        "evidence_type": {"type": "string"}
+      }
+    },
+    "validation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "validation_id", "category", "command", "scope", "result", "timestamp",
+        "evidence_type"
+      ],
+      "properties": {
+        "validation_id": {"type": "string"},
+        "category": {"enum": ["testing", "linting", "type_checking"]},
+        "command": {"type": ["string", "null"]},
+        "scope": {"type": "string"},
+        "result": {"enum": ["success", "failure", "unknown"]},
+        "timestamp": {"type": "string", "format": "date-time"},
+        "evidence_type": {"type": "string"}
+      }
+    }
+  }
+}
