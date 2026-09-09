@@ -221,9 +221,17 @@ def _commit_allowlisted(config: LedgerConfig, *, now: datetime | None) -> bool:
     if not allowed:
         return False
     assert_allowlisted_content_safe(config.ledger_checkout, allowed)
-    stage = _git(config.ledger_checkout, "add", "--", *allowed)
-    if stage.returncode != 0:
-        raise GitSyncError("Could not stage allowlisted ledger paths")
+    tracked = _git(config.ledger_checkout, "ls-files", "-z")
+    if tracked.returncode != 0:
+        raise GitSyncError("Could not inspect indexed ledger paths")
+    indexed_paths = set(tracked.stdout.split("\0"))
+    # An interrupted migration may already have staged a legacy-file deletion.
+    stageable = tuple(path for path in allowed
+                      if (config.ledger_checkout / path).exists() or path in indexed_paths)
+    if stageable:
+        stage = _git(config.ledger_checkout, "add", "--", *stageable)
+        if stage.returncode != 0:
+            raise GitSyncError("Could not stage allowlisted ledger paths")
     staged = _git(config.ledger_checkout, "diff", "--cached", "--quiet")
     if staged.returncode == 0:
         return False

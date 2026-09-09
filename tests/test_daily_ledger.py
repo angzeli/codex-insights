@@ -9,6 +9,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -178,8 +179,9 @@ def test_transcript_retry_budget_and_isolation(
         return real_build(job, *args, **kwargs)
 
     monkeypatch.setattr(service_module, "build_session_cache", build)
-    monkeypatch.setattr(service_module.time, "monotonic", lambda: clock[0])
-    monkeypatch.setattr(service_module.time, "sleep", sleep)
+    monkeypatch.setattr(service_module, "time", SimpleNamespace(
+        monotonic=lambda: clock[0], sleep=sleep,
+    ))
     result = flush_queue(config)
     assert calls[1] == "zz-unrelated"
     assert result.retry_attempts == min(failures, 3)
@@ -845,6 +847,25 @@ def test_non_fast_forward_retry_is_bounded_and_never_forces(tmp_path: Path) -> N
     pushes = [call for call in calls if call and call[0] == "push"]
     assert len(pushes) == 2
     assert all("--force" not in call and "-f" not in call for call in calls)
+
+
+def test_sync_resumes_already_staged_legacy_deletion(tmp_path: Path) -> None:
+    config, _ = _git_config(tmp_path, push_enabled=True)
+    _queue_records(config, tmp_path, _validation_records())
+    flush_queue(config)
+    day = next(config.ledger_checkout.rglob("manifest.json")).parent
+    legacy = day / "events.jsonl"
+    legacy.write_text('{"safe":true}\n', encoding="utf-8")
+    _run("git", "-C", str(config.ledger_checkout), "add", "--", str(legacy))
+    _run("git", "-C", str(config.ledger_checkout), "commit", "-m", "Synthetic legacy file")
+    legacy.unlink()
+    _run("git", "-C", str(config.ledger_checkout), "add", "--", str(legacy))
+
+    result = git_sync_module.sync_checkout(config, lambda: None)
+
+    assert result.committed and result.pushed
+    assert not _git_output(config.ledger_checkout, "status", "--porcelain")
+    assert not legacy.exists()
 
 
 def test_successful_flush_then_noop_sync_creates_no_commit(tmp_path: Path) -> None:
