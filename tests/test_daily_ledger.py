@@ -15,6 +15,8 @@ import pytest
 from typer.testing import CliRunner
 
 import codex_insights.daily_ledger.git_sync as git_sync_module
+import codex_insights.daily_ledger.service as service_module
+from codex_insights.adapters.base import SourceChangedDuringParseError
 from codex_insights.cli import app
 from codex_insights.daily_ledger.config import (
     LEDGER_SCHEMA_VERSION,
@@ -32,7 +34,9 @@ from codex_insights.daily_ledger.git_sync import (
     is_allowlisted_path,
 )
 from codex_insights.daily_ledger.privacy import (
+    MAX_JSONL_RECORD_BYTES,
     sanitize_remote_text,
+    scan_remote_file,
     scan_remote_value,
 )
 from codex_insights.daily_ledger.queue import (
@@ -51,6 +55,159 @@ from codex_insights.daily_ledger.schema_validation import validate_generated_doc
 from codex_insights.daily_ledger.service import backfill_range, flush_queue
 
 runner = CliRunner()
+
+
+@pytest.mark.parametrize("tail,category", [
+    (b'{"safe":true}\n', None),
+    (b'{"value":"password=synthetic"}\n', "credential_like"),
+    (b'{"value":"/Users/example/private"}\n', "absolute_path"),
+    (b'{"prompt":"forbidden"}\n', "forbidden_field"),
+    (b'{invalid}\n', "malformed_jsonl_record"),
+    (b'{"value":NaN}\n', "malformed_jsonl_record"),
+    (b'{"value":"\xff"}\n', "malformed_jsonl_record"),
+    (b'x' * (MAX_JSONL_RECORD_BYTES + 1), "oversized_jsonl_record"),
+])
+def test_large_jsonl_streams_and_checks_late_records(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, tail: bytes, category: str | None,
+) -> None:
+    path = tmp_path / "events.jsonl"
+    safe = b'{"value":"' + b'safe event ' * 100 + b'"}\n'
+    with path.open("wb") as stream:
+        for _ in range(2200):
+            stream.write(safe)
+        stream.write(tail)
+        stream.write(b'{"safe":true}\n')
+    assert path.stat().st_size > 2 * 1024 * 1024
+    original_open = Path.open
+
+    class BoundedReader:
+        def __enter__(self):
+            self.stream = original_open(path, "rb")
+            return self
+
+        def __exit__(self, *args):
+            self.stream.close()
+
+        def readline(self, size):
+            assert 0 < size <= MAX_JSONL_RECORD_BYTES + 1
+            return self.stream.readline(size)
+
+    monkeypatch.setattr(Path, "open", lambda *args, **kwargs: BoundedReader())
+    findings = scan_remote_file(path, location="events.jsonl")
+    if category is None:
+        assert not findings
+    else:
+        assert findings[0].category == category
+        assert findings[0].location.startswith("events.jsonl:2201")
+
+
+def test_non_jsonl_retains_whole_file_limit(tmp_path: Path) -> None:
+    path = tmp_path / "large.json"
+    path.write_bytes(b' ' * (2 * 1024 * 1024 + 1))
+    assert scan_remote_file(path, location="large.json")[0].category == "oversized_file"
+
+
+def test_session_shards_are_independent_and_migrate_legacy(tmp_path: Path) -> None:
+    config = _direct_config(tmp_path)
+    for identity in ("first", "second"):
+        source = _write_rollout(tmp_path / identity / "session.jsonl", _validation_records())
+        payload = _hook_payload(source, tmp_path / "project", event="Stop")
+        payload["session_id"] = identity
+        capture_hook_payload(payload, config=config, launch_worker=False)
+    flush_queue(config, no_push=True)
+    shards = sorted(config.ledger_checkout.rglob("events/*.jsonl"))
+    assert len(shards) == 2
+    assert not list(config.ledger_checkout.rglob("events.jsonl"))
+    before = {p: (p.read_bytes(), p.stat().st_mtime_ns) for p in shards}
+    day = shards[0].parents[1]
+    manifest = json.loads((day / "manifest.json").read_text())
+    for shard in shards:
+        relative = str(shard.relative_to(day))
+        assert manifest["generated_file_hashes"][relative] == hashlib.sha256(
+            shard.read_bytes()).hexdigest()
+        assert all(e["session_key"] == shard.stem for e in _read_jsonl(shard))
+        assert is_allowlisted_path(str(shard.relative_to(config.ledger_checkout)))
+    ids = [e["event_id"] for shard in shards for e in _read_jsonl(shard)]
+    assert len(ids) == len(set(ids))
+    export_day(config, date(2026, 9, 1))
+    assert before == {p: (p.read_bytes(), p.stat().st_mtime_ns) for p in shards}
+    cache_path = config.paths.cache / "sessions" / f"{shards[0].stem}.json"
+    cache = json.loads(cache_path.read_text())
+    cache["slices"]["2026-09-01"]["record"]["objective"] = "Updated objective."
+    new_event = dict(cache["slices"]["2026-09-01"]["events"][0])
+    new_event["event_id"] = "late-event"
+    cache["slices"]["2026-09-01"]["events"].append(new_event)
+    cache_path.write_text(json.dumps(cache))
+    export_day(config, date(2026, 9, 1))
+    assert before[shards[0]][0] != shards[0].read_bytes()
+    assert before[shards[1]] == (shards[1].read_bytes(), shards[1].stat().st_mtime_ns)
+    # Legacy file can exceed the old limit; migration uses cached evidence.
+    legacy = day / "events.jsonl"
+    legacy.write_bytes(b'{"safe":true}\n' * 170000)
+    migrated = export_day(config, date(2026, 9, 1))
+    assert migrated.changed and not legacy.exists()
+    assert "events.jsonl" not in json.loads((day / "manifest.json").read_text())[
+        "generated_file_hashes"]
+    assert not export_day(config, date(2026, 9, 1)).changed
+
+
+@pytest.mark.parametrize("failures", [1, 3, 10])
+def test_transcript_retry_budget_and_isolation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failures: int,
+) -> None:
+    config, _ = _git_config(tmp_path, push_enabled=True)
+    _queue_records(config, tmp_path, _validation_records())
+    first = next(config.paths.pending.glob("*.json"))
+    raw = json.loads(first.read_text())
+    raw["event_id"] = "zz-unrelated"
+    other = config.paths.pending / "zz-unrelated.json"
+    other.write_text(json.dumps(raw))
+    real_build = service_module.build_session_cache
+    calls = []
+    clock = [0.0]
+    sleeps = []
+
+    def sleep(delay):
+        sleeps.append(delay)
+        clock[0] += delay
+
+    def build(job, *args, **kwargs):
+        calls.append(job.event_id)
+        if job.event_id != "zz-unrelated" and calls.count(job.event_id) <= failures:
+            raise SourceChangedDuringParseError("synthetic mutation")
+        return real_build(job, *args, **kwargs)
+
+    monkeypatch.setattr(service_module, "build_session_cache", build)
+    monkeypatch.setattr(service_module.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(service_module.time, "sleep", sleep)
+    result = flush_queue(config)
+    assert calls[1] == "zz-unrelated"
+    assert result.retry_attempts == min(failures, 3)
+    assert sleeps == list(service_module.TRANSCRIPT_RETRY_DELAYS[:min(failures, 3)])
+    assert result.failed_jobs == 0 and result.git.pushed
+    assert result.retry_exhausted_jobs == int(failures > 3)
+    assert result.retained_jobs == int(failures > 3)
+    assert first.exists() == (failures > 3)
+    assert not list(config.paths.processing.glob("*.json"))
+    events = [e for p in config.ledger_checkout.rglob("events/*.jsonl") for e in _read_jsonl(p)]
+    assert len(events) == len({e["event_id"] for e in events})
+    summary = json.loads(next(config.ledger_checkout.rglob("summary.json")).read_text())
+    assert summary["totals"]["validation_events"] == 1
+
+
+def test_missing_source_isolated_from_valid_push(tmp_path: Path) -> None:
+    config, _ = _git_config(tmp_path, push_enabled=True)
+    _queue_records(config, tmp_path, _validation_records())
+    raw = json.loads(next(config.paths.pending.glob("*.json")).read_text())
+    raw["event_id"] = "missing"
+    raw["transcript_path"] = str(tmp_path / "absent.jsonl")
+    (config.paths.pending / "missing.json").write_text(json.dumps(raw))
+    result = flush_queue(config)
+    assert result.failed_jobs == 1 and result.processed_jobs == 1
+    assert result.git.pushed
+    error = json.loads((config.paths.failed / "missing.error.json").read_text())
+    assert error["error_type"] == "FileNotFoundError"
+    assert (config.paths.failed / "missing.json").exists()
 
 
 def test_xdg_defaults_and_v1_config_loading(tmp_path: Path) -> None:
@@ -269,7 +426,7 @@ def test_same_hook_event_is_idempotent(tmp_path: Path) -> None:
     assert len(tuple(config.paths.pending.glob("*.json"))) == 1
     result = flush_queue(config, no_push=True)
     assert result.processed_jobs == 1
-    events = _read_jsonl(next(config.ledger_checkout.rglob("events.jsonl")))
+    events = _read_jsonl(next(config.ledger_checkout.rglob("events/*.jsonl")))
     identifiers = [str(item["event_id"]) for item in events]
     assert len(identifiers) == len(set(identifiers))
 
@@ -414,6 +571,10 @@ def test_cross_reporting_boundary_splits_without_double_counting(tmp_path: Path)
         for path in sorted(config.ledger_checkout.rglob("summary.json"))
     ]
     assert sum(int(item["totals"]["validation_events"]) for item in summaries) == 1
+    shards = sorted(config.ledger_checkout.rglob("events/*.jsonl"))
+    assert len(shards) == 2
+    event_ids = [e["event_id"] for p in shards for e in _read_jsonl(p)]
+    assert len(event_ids) == len(set(event_ids))
 
 
 def test_commits_and_validations_are_deduplicated(tmp_path: Path) -> None:

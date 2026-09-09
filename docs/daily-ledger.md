@@ -150,6 +150,25 @@ python3 "$HOME/.local/share/codex-insights/daily-ledger/manage_hooks.py" disable
 
 ## Queue and recovery
 
+Rebuilt reports write event provenance to `events/<session-key>.jsonl`, alongside
+`sessions/<session-key>.json`. Manifests enumerate the actual shard hashes. Legacy
+`events.jsonl` reports remain readable; rebuilding migrates them in a normal commit,
+without rewriting Git history. Event provenance revisions are independent of daily
+manifest revisions, so another session's update does not rewrite an unchanged shard.
+Events are ordered by timestamp, then event ID. Summary and reporting-window semantics
+are unchanged; reporters should use the manifest, summary, and session aggregates.
+
+JSONL privacy checks stream every record with a 256 KiB limit (including its newline).
+Malformed UTF-8/JSON, oversized records, and unsafe contents fail closed with a line
+location. Other files retain the 2 MiB whole-file limit. A large safe event stream
+does not fail solely because of its total size.
+
+A transcript that changes during parsing gets three retries with 0.5, 2, and 5 second
+backoffs, after other queued work has had its first attempt. Exhausted jobs remain
+pending, with a content-free `transcript-retry-errors.log` marker and retry counts in
+`flush --json`. No partial parse is saved. Missing sources remain in `failed/` with
+`FileNotFoundError` metadata; unrelated valid jobs can still synchronize.
+
 Local state uses `pending/`, `processing/`, `processed/`, `failed/`, `cache/`, `locks/`, and `logs/`
 under `~/.local/state/codex-insights/daily-ledger/`. One JSON file represents one job. Capture writes
 to a temporary sibling and atomically renames it; several detached workers converge on one process

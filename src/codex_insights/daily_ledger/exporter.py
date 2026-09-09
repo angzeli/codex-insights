@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from codex_insights.daily_ledger.config import LedgerConfig, ensure_state_directories
-from codex_insights.daily_ledger.privacy import assert_remote_safe
+from codex_insights.daily_ledger.privacy import MAX_JSONL_RECORD_BYTES, assert_remote_safe
 from codex_insights.daily_ledger.report_policy import (
     ReportingWindow,
     ensure_report_policy,
@@ -82,7 +82,12 @@ def export_day(config: LedgerConfig, day: date) -> ExportResult:
         != _canonical(previous_records[key], drop_revision=True)
     )
     removed_keys = sorted(set(previous_records) - set(raw_records))
-    content_changed = bool(new_keys or changed_keys or removed_keys) or not previous_manifest
+    legacy_events = destination / "events.jsonl"
+    content_changed = (
+        bool(new_keys or changed_keys or removed_keys)
+        or not previous_manifest
+        or legacy_events.exists()
+    )
     revision = (
         1
         if previous_revision == 0
@@ -97,7 +102,7 @@ def export_day(config: LedgerConfig, day: date) -> ExportResult:
         validate_generated_document(record, "codex-session-v1.schema.json")
         records[key] = record
     generated_at = _generated_at(records)
-    events = _events(slices, revision=revision)
+    events = _events(slices)
     summary = _summary(
         day_text,
         window=window,
@@ -106,27 +111,33 @@ def export_day(config: LedgerConfig, day: date) -> ExportResult:
         records=records,
     )
     sync_state = _sync_state(records)
-    event_text = "".join(
-        json.dumps(event, sort_keys=True, separators=(",", ":")) + "\n"
-        for event in events
-    )
+    event_lines: dict[str, list[str]] = {key: [] for key in records}
     assert_remote_safe(summary)
     validate_generated_document(summary, "codex-daily-summary-v1.schema.json")
     for event in events:
         assert_remote_safe(event)
+        key = str(event.get("session_key"))
+        if key not in records:
+            raise ValueError("Event has no matching session aggregate")
+        line = json.dumps(event, sort_keys=True, separators=(",", ":")) + "\n"
+        if len(line.encode("utf-8")) > MAX_JSONL_RECORD_BYTES:
+            raise ValueError("oversized_jsonl_record")
+        event_lines[key].append(line)
 
     session_payloads = {
         sessions_directory / f"{key}.json": _pretty(record)
         for key, record in records.items()
     }
     summary_path = destination / "summary.json"
-    events_path = destination / "events.jsonl"
+    event_payloads = {
+        destination / "events" / f"{key}.jsonl": "".join(lines)
+        for key, lines in sorted(event_lines.items())
+    }
     hashes = {
         str(path.relative_to(destination)): _sha256_text(payload)
-        for path, payload in session_payloads.items()
+        for path, payload in (*session_payloads.items(), *event_payloads.items())
     }
     hashes[summary_path.name] = _sha256_text(_pretty(summary))
-    hashes[events_path.name] = _sha256_text(event_text)
     first_observed, last_observed = _observed_bounds(records)
     previous_late_arrival = previous_manifest.get("late_arrival")
     late_arrival: dict[str, object]
@@ -159,13 +170,13 @@ def export_day(config: LedgerConfig, day: date) -> ExportResult:
     assert_remote_safe(manifest)
     validate_generated_document(manifest, "codex-manifest-v1.schema.json")
     manifest_path = destination / "manifest.json"
-    generated_paths = [*session_payloads, summary_path, events_path, manifest_path]
+    generated_paths = [*session_payloads, summary_path, *event_payloads, manifest_path]
     changed = any(
         not path.exists() or path.read_text(encoding="utf-8") != payload
         for path, payload in (
             *session_payloads.items(),
             (summary_path, _pretty(summary)),
-            (events_path, event_text),
+            *event_payloads.items(),
             (manifest_path, _pretty(manifest)),
         )
     )
@@ -176,7 +187,14 @@ def export_day(config: LedgerConfig, day: date) -> ExportResult:
     for path, payload in session_payloads.items():
         atomic_write_text(path, payload, overwrite=True, create_parents=True)
     atomic_write_text(summary_path, _pretty(summary), overwrite=True, create_parents=True)
-    atomic_write_text(events_path, event_text, overwrite=True, create_parents=True)
+    for path, payload in event_payloads.items():
+        if not path.exists() or path.read_text(encoding="utf-8") != payload:
+            atomic_write_text(path, payload, overwrite=True, create_parents=True)
+    for stale in sorted((destination / "events").glob("*.jsonl")):
+        if stale not in event_payloads:
+            stale.unlink()
+    if legacy_events.exists():
+        legacy_events.unlink()
     atomic_write_text(manifest_path, _pretty(manifest), overwrite=True, create_parents=True)
     latest_path = _write_latest_status(
         config,
@@ -385,19 +403,24 @@ def _rollup(
 
 def _events(
     slices: dict[str, dict[str, object]],
-    *,
-    revision: int,
 ) -> list[dict[str, object]]:
     rows: dict[str, dict[str, object]] = {}
-    for value in slices.values():
+    for session_key, value in sorted(slices.items()):
         for raw in _objects(value.get("events")):
             event_id = raw.get("event_id")
             if not isinstance(event_id, str):
                 continue
             row = dict(raw)
-            row["revision"] = revision
+            if row.get("session_key") != session_key:
+                raise ValueError("Event shard session identity mismatch")
+            # Event provenance revision is independent of the daily manifest.
+            # Updating another session must not churn this session's shard.
+            row.setdefault("revision", 1)
+            if event_id in rows and rows[event_id] != row:
+                raise ValueError("Conflicting event identity across session shards")
             rows[event_id] = row
-    return [rows[key] for key in sorted(rows)]
+    return sorted(rows.values(), key=lambda row: (str(row.get("timestamp") or ""),
+                                                  str(row["event_id"])))
 
 
 def _sync_state(records: dict[str, dict[str, object]]) -> str:
@@ -532,7 +555,7 @@ manifest.
 _SCHEMA_README = """# Ledger schema
 
 The V1 JSON Schemas in `schema/` describe per-session slices, deterministic daily summaries, and
-daily manifests. `events.jsonl` is deliberately minimal and contains only event identity, type,
+daily manifests. `events/<session-key>.jsonl` contains only event identity, type,
 time, source hash, stable session key, and revision. `config/report-policy.yaml` is the committed
 source of truth for reporting windows. Manifests permanently record the policy and half-open window
 used for each report date. Unknown evidence remains explicit.

@@ -8,6 +8,9 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
+MAX_JSONL_RECORD_BYTES = 256 * 1024
+MAX_REMOTE_FILE_BYTES = 2 * 1024 * 1024
+
 _ABSOLUTE_PATH = re.compile(
     r"(?:/Users/[^\s]+|/home/[^\s]+|[A-Za-z]:\\(?:Users|Documents and Settings)\\[^\s]+)"
 )
@@ -105,24 +108,42 @@ def scan_remote_file(path: Path, *, location: str) -> tuple[LeakageFinding, ...]
     try:
         if path.is_symlink():
             return (LeakageFinding("symlink", location),)
-        if path.stat().st_size > 2 * 1024 * 1024:
+        if path.suffix == ".jsonl":
+            return _scan_jsonl(path, location=location)
+        if path.stat().st_size > MAX_REMOTE_FILE_BYTES:
             return (LeakageFinding("oversized_file", location),)
         text = path.read_text(encoding="utf-8")
         if path.suffix == ".json":
             return scan_remote_value(json.loads(text), location=location)
-        if path.suffix == ".jsonl":
-            findings: list[LeakageFinding] = []
-            for line_number, line in enumerate(text.splitlines(), start=1):
-                if line:
-                    findings.extend(
-                        scan_remote_value(
-                            json.loads(line), location=f"{location}:{line_number}"
-                        )
-                    )
-            return tuple(findings)
         return scan_remote_value(text, location=location)
     except (OSError, UnicodeError, json.JSONDecodeError):
         return (LeakageFinding("malformed_or_unreadable_file", location),)
+
+
+def _scan_jsonl(path: Path, *, location: str) -> tuple[LeakageFinding, ...]:
+    # Bound the read itself, including a line with no newline. Stop on the first
+    # violation so diagnostic accumulation cannot grow with the file either.
+    with path.open("rb") as stream:
+        line_number = 0
+        while line := stream.readline(MAX_JSONL_RECORD_BYTES + 1):
+            line_number += 1
+            record_location = f"{location}:{line_number}"
+            if len(line) > MAX_JSONL_RECORD_BYTES:
+                return (LeakageFinding("oversized_jsonl_record", record_location),)
+            if not line.strip():
+                continue
+            try:
+                record = json.loads(line.decode("utf-8"), parse_constant=_reject_json_constant)
+                findings = scan_remote_value(record, location=record_location)
+            except (UnicodeError, ValueError, RecursionError):
+                return (LeakageFinding("malformed_jsonl_record", record_location),)
+            if findings:
+                return findings
+    return ()
+
+
+def _reject_json_constant(value: str) -> None:
+    raise ValueError("Non-finite JSON constant")
 
 
 def assert_remote_safe(value: object) -> None:

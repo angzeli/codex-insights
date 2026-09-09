@@ -4,11 +4,14 @@ from __future__ import annotations
 
 import json
 import os
+import time
+from collections import deque
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from pathlib import Path
 
 from codex_insights.adapters import CodexLocalAdapter
+from codex_insights.adapters.base import SourceChangedDuringParseError
 from codex_insights.config import resolve_codex_home
 from codex_insights.daily_ledger.config import (
     LedgerConfig,
@@ -31,6 +34,7 @@ from codex_insights.daily_ledger.locking import LockUnavailableError, ProcessLoc
 from codex_insights.daily_ledger.queue import (
     capture_hook_payload,
     load_hook_job,
+    log_local_failure,
 )
 from codex_insights.daily_ledger.records import (
     RecordBuildResult,
@@ -42,6 +46,12 @@ from codex_insights.daily_ledger.report_policy import (
     report_date_for_timestamp,
 )
 from codex_insights.path_safety import atomic_write_text
+
+TRANSCRIPT_RETRY_DELAYS = (0.5, 2.0, 5.0)
+
+
+class TranscriptRetryExhaustedError(RuntimeError):
+    """An append-active source stayed unstable; its job remains pending."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -55,6 +65,8 @@ class FlushResult:
     exported_dates: tuple[str, ...]
     already_running: bool = False
     git: GitSyncResult | None = None
+    retry_attempts: int = 0
+    retry_exhausted_jobs: int = 0
 
 
 def flush_queue(config: LedgerConfig, *, no_push: bool = False) -> FlushResult:
@@ -139,7 +151,14 @@ def _flush_locked(config: LedgerConfig, *, no_push: bool) -> FlushResult:
     processed = 0
     affected_dates: set[date] = set()
     valid_jobs: list[Path] = []
-    for path in claimed:
+    deferred: list[Path] = []
+    retry_attempts = 0
+    work = deque((path, 0, 0.0) for path in claimed)
+    while work:
+        path, attempt, ready_at = work.popleft()
+        delay = ready_at - time.monotonic()
+        if delay > 0:
+            time.sleep(delay)
         try:
             job = load_hook_job(path)
             validate_checkout_separation(
@@ -160,6 +179,15 @@ def _flush_locked(config: LedgerConfig, *, no_push: bool) -> FlushResult:
             _save_cache(config, result, previous)
             processed += 1
             valid_jobs.append(path)
+        except SourceChangedDuringParseError:
+            if attempt < len(TRANSCRIPT_RETRY_DELAYS):
+                retry_attempts += 1
+                work.append((path, attempt + 1,
+                             time.monotonic() + TRANSCRIPT_RETRY_DELAYS[attempt]))
+            else:
+                deferred.append(path)
+                _return_to_pending(config, [path])
+                log_local_failure(config.paths, "transcript-retry", TranscriptRetryExhaustedError())
         except Exception as exc:
             failed += 1
             _move_failed(config, path, exc)
@@ -173,8 +201,10 @@ def _flush_locked(config: LedgerConfig, *, no_push: bool) -> FlushResult:
             claimed_jobs=len(claimed),
             processed_jobs=processed,
             failed_jobs=failed,
-            retained_jobs=len(valid_jobs),
+            retained_jobs=len(valid_jobs) + len(deferred),
             exported_dates=tuple(item.date for item in exported),
+            retry_attempts=retry_attempts,
+            retry_exhausted_jobs=len(deferred),
         )
     try:
         git_result = sync_checkout(
@@ -189,9 +219,11 @@ def _flush_locked(config: LedgerConfig, *, no_push: bool) -> FlushResult:
         claimed_jobs=len(claimed),
         processed_jobs=processed,
         failed_jobs=failed,
-        retained_jobs=0,
+        retained_jobs=len(deferred),
         exported_dates=tuple(item.date for item in exported),
         git=git_result,
+        retry_attempts=retry_attempts,
+        retry_exhausted_jobs=len(deferred),
     )
 
 

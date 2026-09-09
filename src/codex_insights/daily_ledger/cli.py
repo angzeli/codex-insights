@@ -132,6 +132,8 @@ def flush_command(
         "retained_jobs": result.retained_jobs,
         "exported_dates": list(result.exported_dates),
         "already_running": result.already_running,
+        "retry_attempts": result.retry_attempts,
+        "retry_exhausted_jobs": result.retry_exhausted_jobs,
         "pushed": result.git.pushed if result.git is not None else False,
         "commit_sha": result.git.commit_sha if result.git is not None else None,
     }

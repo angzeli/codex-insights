@@ -172,10 +172,11 @@ def is_allowlisted_path(path: str) -> bool:
         year, month, day, directory, filename = parts[2:]
         return (
             _valid_day_path(year, month, day)
-            and directory == "sessions"
-            and filename.endswith(".json")
-            and len(filename) == 37
-            and all(character in "0123456789abcdef" for character in filename[:-5])
+            and (directory, PurePosixPath(filename).suffix)
+            in {("sessions", ".json"), ("events", ".jsonl")}
+            and len(PurePosixPath(filename).stem) == 32
+            and all(character in "0123456789abcdef"
+                    for character in PurePosixPath(filename).stem)
         )
     return False
 
